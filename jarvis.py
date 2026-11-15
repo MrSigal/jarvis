@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "3.6"
+VERSION = "3.7"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -52,6 +52,10 @@ if sys.stdout:  # running with a console
 # ======================================================================= CONFIG
 DEFAULT_CONFIG = {
     "anthropic_api_key": "",
+    "brain_engine": "claude",               # claude (paid, smartest) | groq (free)
+    "groq_api_key": "",                     # free key from console.groq.com/keys
+    "groq_models": ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"],
+    "stt_engine": "google",                 # google | groq (Whisper)
     "claude_model": "claude-haiku-5-5",   # cheapest Claude model
     "voice": "he-IL-AvriNeural",            # free Hebrew male voice (female: he-IL-HilaNeural)
     "tts_engine": "edge",                   # edge (fast, built-in) | gemini (Google, most natural)
@@ -445,8 +449,42 @@ class Ears:
         ui.state("thinking")
         return self.transcribe(np.concatenate(frames).tobytes())
 
+    WHISPER_JUNK = ("תודה רבה", "תודה שצפיתם", "כתוביות", "תרגום", "subtitles", "תודה על הצפייה")
+
+    def transcribe_groq(self, pcm):
+        """Groq Whisper (free). Returns text, None for silence/noise, or raises to fall back to Google."""
+        import httpx
+        buf = BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE); w.writeframes(pcm)
+        r = httpx.post("https://api.groq.com/openai/v1/audio/transcriptions",
+                       headers={"Authorization": f"Bearer {CFG['groq_api_key']}"},
+                       data={"model": "whisper-large-v3-turbo", "language": "he",
+                             "response_format": "verbose_json", "temperature": "0"},
+                       files={"file": ("speech.wav", buf.getvalue(), "audio/wav")}, timeout=20)
+        if r.status_code != 200:
+            raise RuntimeError(f"Groq STT {r.status_code}: {r.text[:150]}")
+        d = r.json()
+        text = (d.get("text") or "").strip()
+        segs = d.get("segments") or []
+        if segs:
+            nsp = sum(sg.get("no_speech_prob", 0) for sg in segs) / len(segs)
+            alp = sum(sg.get("avg_logprob", 0) for sg in segs) / len(segs)
+            if nsp > 0.6 or alp < -1.0:
+                log.info(f"Whisper: ignored unsure result ({nsp:.2f}/{alp:.2f}): {text}")
+                return None
+        if len(text) < 30 and any(j in text for j in self.WHISPER_JUNK):
+            log.info(f"Whisper: ignored typical hallucination: {text}")
+            return None          # Whisper invents these on silence
+        return hebrew_only(text)
+
     def transcribe(self, pcm):
-        """Returns English text, or None if the speech was not clearly English."""
+        """Returns Hebrew text, or None if the speech was not clearly Hebrew."""
+        if CFG.get("stt_engine") == "groq" and CFG.get("groq_api_key"):
+            try:
+                return self.transcribe_groq(pcm)
+            except Exception as e:
+                log.error(f"Groq STT failed, using Google: {e}")
         try:
             res = self.rec.recognize_google(self.sr.AudioData(pcm, SAMPLE_RATE, 2), language="he-IL", show_all=True)
         except self.sr.UnknownValueError:
@@ -1060,6 +1098,84 @@ class Brain:
         return f"סליחה {CFG['user_name']}, משהו הסתבך. תנסה שוב?"
 
 
+class GroqBrain:
+    """Free brain through GroqCloud. Rotates models when one hits its free-tier limit."""
+    URL = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(self, timers):
+        self.timers = timers
+        self.history = []
+        self.last_used = 0.0
+        self.tools = [{"type": "function", "function": {
+            "name": t["name"], "description": t["description"], "parameters": t["input_schema"]}} for t in TOOLS]
+        self.runner = object.__new__(Brain)        # reuse the tool runner
+        self.runner.timers = timers
+        self.no_effort = set()
+
+    def run_tool(self, name, args):
+        return Brain.run_tool(self.runner, name, args)
+
+    def _post(self, model, messages):
+        import httpx
+        body = {"model": model, "messages": messages, "tools": self.tools, "tool_choice": "auto",
+                "max_completion_tokens": 1200, "temperature": 0.4}
+        if model.startswith("openai/gpt-oss") and model not in self.no_effort:
+            body["reasoning_effort"] = "low"
+        r = httpx.post(self.URL, headers={"Authorization": f"Bearer {CFG['groq_api_key']}"}, json=body, timeout=60)
+        if r.status_code == 400 and "reasoning_effort" in r.text:
+            self.no_effort.add(model)
+            return self._post(model, messages)
+        return r
+
+    def _complete(self, messages):
+        errors = []
+        for model in CFG.get("groq_models") or GroqBrain.DEFAULT_MODELS:
+            r = self._post(model, messages)
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]
+            if r.status_code in (401, 403):
+                raise RuntimeError("authentication: Groq key rejected")
+            errors.append(f"{model}: {r.status_code}")
+            log.warning(f"Groq {model}: {r.status_code} {r.text[:200]}")
+            # 429 = this model's free limit -> try the next one; 400/404 = model gone or tool error -> next
+        if all(e.endswith("429") for e in errors):
+            raise RuntimeError("groq_rate_limit")
+        raise RuntimeError("Groq: " + ", ".join(errors))
+
+    def ask(self, text):
+        if len(self.history) > 16 or time.time() - self.last_used > 15 * 60:
+            self.history = []
+        self.last_used = time.time()
+        mark = len(self.history)
+        self.history.append({"role": "user", "content": text})
+        try:
+            for _ in range(8):
+                msgs = [{"role": "system", "content": system_prompt()}] + self.history
+                msg = self._complete(msgs)
+                calls = msg.get("tool_calls") or []
+                entry = {"role": "assistant", "content": msg.get("content") or ""}
+                if calls:
+                    entry["tool_calls"] = calls
+                self.history.append(entry)
+                if not calls:
+                    return (msg.get("content") or "").strip() or f"בוצע, {CFG['user_name']}."
+                for c in calls:
+                    try:
+                        args = json.loads(c["function"].get("arguments") or "{}")
+                    except Exception:
+                        args = {}
+                    out = self.run_tool(c["function"]["name"], args)
+                    self.history.append({"role": "tool", "tool_call_id": c["id"],
+                                         "content": json.dumps(out, ensure_ascii=False)[:4000]})
+            return f"סליחה {CFG['user_name']}, משהו הסתבך. תנסה שוב?"
+        except Exception:
+            del self.history[mark:]
+            raise
+
+
+GroqBrain.DEFAULT_MODELS = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"]
+
+
 class BasicBrain:
     """Used when no Claude key is set: open / close / time only."""
     def __init__(self, timers):
@@ -1153,6 +1269,10 @@ class Assistant:
         self.busy = False
 
     def build_brain(self):
+        if CFG.get("brain_engine") == "groq" and CFG.get("groq_api_key"):
+            self.brain = GroqBrain(self.timers)
+            ui.status({"brain": "online"})
+            return
         if CFG["anthropic_api_key"]:
             try:
                 self.brain = Brain(self.timers)
@@ -1266,7 +1386,11 @@ class Assistant:
                 msg = str(e)
                 low = msg.lower()
                 ui.toast("שגיאה: " + msg[:180], "error")
-                if "authentication" in low or "401" in msg or "api key" in low:
+                if "groq_rate_limit" in low:
+                    answer = f"הגעתי למגבלה החינמית של Groq לדקה הזאת, {CFG['user_name']}. תנסה שוב בעוד רגע."
+                elif "authentication" in low and "groq" in low:
+                    answer = "Groq דחה את המפתח. תבדוק אותו בהגדרות."
+                elif "authentication" in low or "401" in msg or "api key" in low:
                     answer = "Claude דחה את החיבור. תבדוק את המפתח בהגדרות."
                 elif "credit" in low or "billing" in low:
                     answer = "נראה שנגמר הקרדיט בחשבון של Claude."
@@ -1363,6 +1487,8 @@ class Api:
     def get_settings(self):
         return {
             "has_claude": bool(CFG["anthropic_api_key"]), "claude_mask": _mask(CFG["anthropic_api_key"]),
+            "brain_engine": CFG.get("brain_engine", "claude"), "stt_engine": CFG.get("stt_engine", "google"),
+            "has_groq": bool(CFG.get("groq_api_key")), "groq_mask": _mask(CFG.get("groq_api_key", "")),
             "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
             "has_gemini": bool(CFG.get("gemini_api_key")), "gemini_mask": _mask(CFG.get("gemini_api_key", "")),
             "gemini_voice": CFG.get("gemini_voice", "Charon"),
@@ -1374,6 +1500,12 @@ class Api:
             CFG["anthropic_api_key"] = s["claude_key"].strip()
         if s.get("voice"):
             CFG["voice"] = s["voice"]
+        if s.get("groq_key", "").strip():
+            CFG["groq_api_key"] = s["groq_key"].strip()
+        if s.get("brain_engine") in ("claude", "groq"):
+            CFG["brain_engine"] = s["brain_engine"]
+        if s.get("stt_engine") in ("google", "groq"):
+            CFG["stt_engine"] = s["stt_engine"]
         if s.get("tts_engine") in ("edge", "gemini"):
             CFG["tts_engine"] = s["tts_engine"]
         if s.get("gemini_key", "").strip():
@@ -1385,8 +1517,16 @@ class Api:
         if s.get("wake_threshold"):
             CFG["wake_threshold"] = float(s["wake_threshold"])
         save_config()
-        result = {"ok": True, "claude": None}
-        if CFG["anthropic_api_key"]:
+        result = {"ok": True, "claude": None, "groq": None, "engine": CFG.get("brain_engine", "claude")}
+        if CFG.get("groq_api_key"):
+            try:
+                import httpx
+                r = httpx.get("https://api.groq.com/openai/v1/models",
+                              headers={"Authorization": f"Bearer {CFG['groq_api_key']}"}, timeout=15)
+                result["groq"] = "ok" if r.status_code == 200 else f"{r.status_code} {r.text[:120]}"
+            except Exception as e:
+                result["groq"] = str(e)[:200]
+        if CFG["anthropic_api_key"] and CFG.get("brain_engine") != "groq":
             try:
                 import anthropic
                 anthropic.Anthropic(api_key=CFG["anthropic_api_key"]).messages.create(

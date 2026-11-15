@@ -143,10 +143,51 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
 .msg.user{border-right:0;border-left:2px solid var(--c2)}
 .msg.jarvis{border-left:0;border-right:2px solid var(--c)}
 .msg.user .who{text-align:left}
+/* ---------- WebGL reactor + particles + boot */
+#core3d{position:absolute;inset:-14%;width:128%;height:128%;pointer-events:none}
+body.gl .reactor svg{display:none}
+body.gl .reactor .glow{opacity:.18}
+#motes{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+#boot{position:fixed;inset:0;z-index:50;background:#000306;display:flex;align-items:center;justify-content:center;flex-direction:column;cursor:pointer;transition:opacity .7s}
+#boot.gone{opacity:0;pointer-events:none}
+#boot .bar{width:min(560px,80vw);direction:ltr}
+#boot .head{display:flex;justify-content:space-between;font-family:Orbitron,sans-serif;color:var(--c);letter-spacing:.35em;font-size:13px;margin-bottom:10px;text-shadow:0 0 10px rgba(63,217,255,.7)}
+#boot .segs{display:grid;grid-template-columns:repeat(28,1fr);gap:3px;height:14px;padding:3px;border:1px solid var(--cdim);clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%)}
+#boot .segs i{background:var(--c);opacity:.08;box-shadow:0 0 6px var(--c);transition:opacity .12s}
+#boot .segs i.on{opacity:.95}
+#boot .log{margin-top:16px;height:132px;overflow:hidden;font-family:Consolas,monospace;font-size:12.5px;color:var(--c2);opacity:.85;direction:rtl;text-align:right}
+#boot .log div{animation:fadein .25s}
+#boot .rings{position:relative;width:min(48vh,420px);height:min(48vh,420px);display:none}
+#boot.stage2 .bar{display:none}
+#boot.stage2 .rings{display:block}
+#boot .rings span{position:absolute;inset:0;margin:auto;border-radius:50%;border:1.5px solid var(--c);opacity:0;animation:ringIn 1.1s cubic-bezier(.2,.8,.2,1) forwards;box-shadow:0 0 14px rgba(63,217,255,.35),inset 0 0 14px rgba(63,217,255,.2)}
+#boot .rings span:nth-child(2){border-style:dashed;animation-delay:.12s}
+#boot .rings span:nth-child(3){border-width:6px;border-color:rgba(63,217,255,.35);animation-delay:.24s}
+#boot .rings span:nth-child(4){animation-delay:.36s}
+#boot .rings b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:Orbitron,sans-serif;font-weight:800;color:var(--c2);letter-spacing:.5em;font-size:clamp(18px,3.4vh,30px);opacity:0;animation:nameIn .6s .7s forwards;text-shadow:0 0 18px var(--c);padding-left:.5em}
+@keyframes ringIn{from{opacity:0;transform:scale(1.9) rotate(-40deg)}to{opacity:1;transform:scale(var(--s)) rotate(0)}}
+@keyframes nameIn{from{opacity:0;letter-spacing:1.4em}to{opacity:1;letter-spacing:.5em}}
+#boot .skip{position:absolute;bottom:22px;color:var(--muted);font-size:13px}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:var(--cdim)}
 </style>
 </head>
 <body class="idle">
+<canvas id="motes"></canvas>
+<div id="boot">
+  <div class="bar">
+    <div class="head"><span>INITIATING SYSTEM</span><span id="bootPct">0%</span></div>
+    <div class="segs" id="bootSegs"></div>
+    <div class="log" id="bootLog"></div>
+  </div>
+  <div class="rings">
+    <span style="--s:1;width:100%;height:100%"></span>
+    <span style="--s:1;width:84%;height:84%"></span>
+    <span style="--s:1;width:66%;height:66%"></span>
+    <span style="--s:1;width:46%;height:46%"></span>
+    <b>J.A.R.V.I.S</b>
+  </div>
+  <div class="skip">לחץ כדי לדלג</div>
+</div>
 <div class="app">
   <!-- TOP -->
   <header class="top">
@@ -191,6 +232,7 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
       <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
       <div class="reactor" id="reactor" title="לחץ כדי לדבר">
         <div class="glow"></div>
+        <canvas id="core3d"></canvas>
         <svg viewBox="-220 -220 440 440">
           <defs>
             <radialGradient id="coreGrad">
@@ -257,9 +299,26 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
     <div class="sub">מדביקים את המפתח פעם אחת. הוא נשמר רק במחשב הזה.</div>
 
     <div class="field">
-      <label>1 · מפתח Claude (המוח) — חובה</label>
-      <div class="help">בזכותו ג'רוויס מבין כל מה שאומרים לו. משיגים אותו ב־<a data-link="https://console.anthropic.com/settings/keys">console.anthropic.com</a> ← API Keys ← Create Key ← מעתיקים.</div>
-      <input id="sClaude" type="password" placeholder="sk-ant-…">
+      <label>1 · המוח</label>
+      <div class="row" style="margin-bottom:8px">
+        <select id="sBrain">
+          <option value="groq">Groq — חינם (מפתח חינמי)</option>
+          <option value="claude">Claude — הכי חכם (בתשלום)</option>
+        </select>
+      </div>
+      <div id="groqRow">
+        <div class="help">מקבלים מפתח חינמי, בלי כרטיס אשראי, ב־<a data-link="https://console.groq.com/keys">console.groq.com/keys</a> ← נרשמים ← Create API Key ← מעתיקים ומדביקים כאן.</div>
+        <input id="sGroq" type="password" placeholder="gsk_…" style="margin-bottom:8px">
+        <label style="margin-top:4px">זיהוי דיבור</label>
+        <select id="sStt">
+          <option value="google">גוגל — רגיל</option>
+          <option value="groq">Whisper של Groq — חינם, לפעמים מדויק יותר</option>
+        </select>
+      </div>
+      <div id="claudeRow" style="display:none">
+        <div class="help">משיגים מפתח ב־<a data-link="https://console.anthropic.com/settings/keys">console.anthropic.com</a> ← API Keys ← Create Key ← מעתיקים.</div>
+        <input id="sClaude" type="password" placeholder="sk-ant-…">
+      </div>
     </div>
 
     <div class="field">
@@ -372,7 +431,8 @@ const LABELS = {idle:'בהמתנה', listening:'מקשיב', thinking:'חושב'
 const HINTS = {idle:'תגיד "היי ג\'רוויס" או לחץ על העיגול', listening:'אני מקשיב…', thinking:'עובד על זה…', speaking:'לחץ ■ כדי לעצור'};
 window.hud = {
   setState(s){
-    document.body.className = s;
+    document.body.classList.remove('idle', 'listening', 'thinking', 'speaking');
+    document.body.classList.add(s);
     $('#stateLabel').textContent = LABELS[s] || s.toUpperCase();
     $('#hint').textContent = HINTS[s] || '';
   },
@@ -419,6 +479,10 @@ document.querySelectorAll('[data-link]').forEach(a => a.onclick = () => api() &&
 
 /* ---------- settings */
 function openSettings(cfg){
+  $('#sBrain').value = cfg.brain_engine || (cfg.has_claude ? 'claude' : 'groq');
+  $('#sGroq').value = ''; $('#sGroq').placeholder = cfg.has_groq ? 'שמור ' + cfg.groq_mask + ' (השאר ריק כדי לא לשנות)' : 'gsk_…';
+  $('#sStt').value = cfg.stt_engine || 'google';
+  showBrain();
   $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'שמור ' + cfg.claude_mask + ' (השאר ריק כדי לא לשנות)' : 'sk-ant-…';
   if (cfg.voice) $('#sVoice').value = cfg.voice;
   $('#sEngine').value = cfg.tts_engine || 'edge';
@@ -433,6 +497,12 @@ function openSettings(cfg){
 $('#sSens').oninput = e => $('#sensVal').textContent = e.target.value;
 $('#openSettings').onclick = async () => openSettings(await api().get_settings());
 $('#closeSettings').onclick = () => $('#settings').classList.remove('open');
+function showBrain(){
+  const g = $('#sBrain').value === 'groq';
+  $('#groqRow').style.display = g ? 'block' : 'none';
+  $('#claudeRow').style.display = g ? 'none' : 'block';
+}
+$('#sBrain').onchange = showBrain;
 function showEngine(){
   const g = $('#sEngine').value === 'gemini';
   $('#edgeRow').style.display = g ? 'none' : 'block';
@@ -450,14 +520,16 @@ async function save(quiet){
   $('#saveMsg').innerHTML = '<span>מתחבר…</span>';
   const r = await api().save_settings({
     claude_key: $('#sClaude').value, voice: $('#sVoice').value,
+    brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
     user_name: $('#sName').value, wake_threshold: $('#sSens').value
   });
-  if (r.claude === 'ok') $('#saveMsg').innerHTML = '<span class="ok">✔ נשמר. המוח מחובר.</span>';
-  else if (r.claude) $('#saveMsg').innerHTML = `<span class="bad">נשמר, אבל Claude דחה את המפתח: ${r.claude}</span>`;
-  else $('#saveMsg').innerHTML = '<span class="ok">נשמר. (עדיין אין מפתח Claude — מצב בסיסי.)</span>';
+  const key = r.engine === 'groq' ? r.groq : r.claude, name = r.engine === 'groq' ? 'Groq' : 'Claude';
+  if (key === 'ok') $('#saveMsg').innerHTML = `<span class="ok">✔ נשמר. המוח (${name}) מחובר.</span>`;
+  else if (key) $('#saveMsg').innerHTML = `<span class="bad">נשמר, אבל ${name} דחה את המפתח: ${key}</span>`;
+  else $('#saveMsg').innerHTML = `<span class="ok">נשמר. (עדיין אין מפתח ל־${name} — מצב בסיסי.)</span>`;
   refreshVoiceInd(await api().get_settings());
-  if (!quiet && r.claude === 'ok') setTimeout(() => $('#settings').classList.remove('open'), 1200);
+  if (!quiet && (r.engine === 'groq' ? r.groq : r.claude) === 'ok') setTimeout(() => $('#settings').classList.remove('open'), 1200);
 }
 $('#saveSettings').onclick = () => save(false);
 function refreshVoiceInd(cfg){
@@ -473,12 +545,140 @@ $('#updateBtn').onclick = async () => {
   else { hud.toast('עודכן לגרסה ' + r.version + ' - מפעיל מחדש…'); b.firstChild.textContent = 'מפעיל מחדש… '; }
   b.disabled = false;
 };
+/* ---------- boot sequence (stage 1: status bar + log, stage 2: rings + name) */
+(() => {
+  const boot = $('#boot'), segs = $('#bootSegs'), log = $('#bootLog'), pct = $('#bootPct');
+  for (let i = 0; i < 28; i++) segs.appendChild(document.createElement('i'));
+  const LINES = ['טוען ליבת מערכת ..................... OK', 'מאתחל זיהוי דיבור .................. OK',
+    'מתחבר למוח ......................... OK', 'בודק מיקרופון ...................... OK',
+    'מסנכרן מערכות קול .................. OK', 'סורק את המחשב ...................... OK',
+    'כל המערכות תקינות'];
+  const start = Date.now(); let done = false;
+  const finish = () => { if (done) return; done = true; boot.classList.add('gone'); window.__open = 1; setTimeout(() => boot.remove(), 800); };
+  boot.onclick = finish;
+  const tick = setInterval(() => {
+    const t = Date.now() - start;
+    if (t < 1900) {
+      const f = Math.min(1, t / 1800);
+      [...segs.children].forEach((s, i) => s.classList.toggle('on', i < Math.round(f * 28)));
+      pct.textContent = Math.round(f * 100) + '%';
+      const n = Math.min(LINES.length, Math.floor(f * LINES.length) + 1);
+      while (log.children.length < n) { const d = document.createElement('div'); d.textContent = LINES[log.children.length]; log.appendChild(d); }
+    } else if (t < 3500) {
+      boot.classList.add('stage2');
+    } else { clearInterval(tick); finish(); }
+  }, 50);
+})();
+
+/* ---------- WebGL reactor: a single polar fragment shader.
+   Adapted from the reactor shader in adewaskar/jarvis (MIT licence). */
+(() => {
+  const cv = $('#core3d');
+  const gl = cv.getContext('webgl', {premultipliedAlpha: false, alpha: true});
+  if (!gl) return;                               // keeps the SVG reactor
+  const vs = `attribute vec2 p; varying vec2 vUv; void main(){ vUv = p*0.5+0.5; gl_Position = vec4(p,0.,1.); }`;
+  const fs = `precision mediump float;
+  uniform vec3 uColor; uniform vec3 uHot; uniform float uLevel; uniform float uPhase; uniform float uOpen; uniform float uZoom;
+  varying vec2 vUv;
+  vec2 hash(vec2 p){ p = vec2(dot(p,vec2(127.1,311.7)), dot(p,vec2(269.5,183.3))); return -1.0+2.0*fract(sin(p)*43758.5453123); }
+  float noise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+    return mix(mix(dot(hash(i),f), dot(hash(i+vec2(1.,0.)),f-vec2(1.,0.)),u.x), mix(dot(hash(i+vec2(0.,1.)),f-vec2(0.,1.)), dot(hash(i+vec2(1.,1.)),f-vec2(1.,1.)),u.x),u.y); }
+  float fbm(vec2 p){ float v=0.0; float a=0.5; for(int i=0;i<5;i++){ v+=a*noise(p); p*=2.02; a*=0.5; } return v; }
+  float band(float r,float r0,float w){ return exp(-pow((r-r0)/w,2.0)); }
+  #define TAU 6.28318530718
+  void main(){
+    vec2 p=(vUv*2.0-1.0)*uZoom; float r=length(p); float a=atan(p.y,p.x); vec2 ring=vec2(cos(a),sin(a));
+    float wob=fbm(ring*2.6+vec2(uPhase*0.22,0.0))*0.055; float grain=fbm(ring*9.0-vec2(uPhase*0.4,0.0))*0.020;
+    float R=0.74+wob+grain+uLevel*0.03;
+    float erode=smoothstep(-0.25,0.35,fbm(ring*5.0+vec2(uPhase*0.5,3.0)));
+    float outer=band(r,R,0.030)*(0.45+erode*0.6); float wall=band(r,R-0.055,0.020)*0.5;
+    float edge=band(r,R+0.004,0.007)*(0.5+uLevel*0.45);
+    float speck=fbm(ring*46.0+vec2(uPhase*0.15,11.0)); speck=pow(max(speck,0.0),3.0);
+    float dust=speck*band(r,R+0.028,0.055)*(1.4+uLevel);
+    float sweepA=mod(uPhase*0.55,TAU); float dA=mod(a-sweepA+TAU+3.14159,TAU)-3.14159;
+    float wake=smoothstep(-2.6,-0.15,dA)*(1.0-smoothstep(0.0,0.22,dA));
+    float radar=wake*band(r,R-0.02,0.075)*(0.55+uLevel*0.45);
+    float lines=band(r,0.615,0.0035)*0.45+band(r,0.560,0.0030)*0.28+band(r,0.470,0.0035)*0.36;
+    float m1=(sin(a*96.0+uPhase*0.6)*0.5+0.5)*(sin(r*210.0)*0.5+0.5);
+    float m2=(sin(a*60.0-uPhase*0.4)*0.5+0.5)*(sin(r*150.0-uPhase)*0.5+0.5);
+    float core=smoothstep(0.40,0.36,r);
+    float coreTex=core*(0.04+mix(m1,m2,0.5)*0.12)*(0.55+uLevel*0.9);
+    float coreEdge=band(r,0.385,0.010)*(0.55+uLevel*0.5);
+    float pulse=band(r,fract(uPhase*0.08)*0.40,0.020)*core*0.45;
+    float bloom=exp(-r*3.4)*(0.16+uLevel*0.34);
+    float v=outer+wall+edge+coreEdge+dust+radar+lines+coreTex+pulse+bloom;
+    vec3 col=mix(uColor,uHot,clamp(edge*1.3+radar*0.7+pulse*0.5+dust*0.4,0.0,1.0));
+    v*=smoothstep(0.0,0.35,uOpen-r*0.45);
+    gl_FragColor=vec4(col*v,clamp(v,0.0,1.0));
+  }`;
+  const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  let prog;
+  try {
+    prog = gl.createProgram();
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(prog); if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error('link');
+  } catch (e) { console.warn('reactor shader failed, using SVG', e); return; }
+  gl.useProgram(prog);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const U = n => gl.getUniformLocation(prog, n);
+  const uColor = U('uColor'), uHot = U('uHot'), uLevel = U('uLevel'), uPhase = U('uPhase'), uOpen = U('uOpen'), uZoom = U('uZoom');
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+  document.body.classList.add('gl');
+  const COLORS = {idle:[[.10,.77,.77],[.79,.99,1]], listening:[[1,.62,.15],[1,.95,.82]],
+                  thinking:[[.25,.85,1],[.9,1,1]], speaking:[[.12,.82,.9],[.85,1,1]]};
+  let col = [.10,.77,.77], hot = [.79,.99,1], phase = 0, level = 0, open = 0, last = performance.now();
+  function frame(now){
+    const dt = Math.min(.05, (now - last) / 1000); last = now;
+    const w = cv.clientWidth * devicePixelRatio, hh = cv.clientHeight * devicePixelRatio;
+    if (cv.width !== Math.round(w)) { cv.width = Math.round(w); cv.height = Math.round(hh); gl.viewport(0, 0, cv.width, cv.height); }
+    const st = document.body.classList.contains('listening') ? 'listening' : document.body.classList.contains('thinking') ? 'thinking'
+             : document.body.classList.contains('speaking') ? 'speaking' : 'idle';
+    const [c, hc] = COLORS[st];
+    for (let i = 0; i < 3; i++) { col[i] += (c[i] - col[i]) * Math.min(1, dt * 2.5); hot[i] += (hc[i] - hot[i]) * Math.min(1, dt * 2.5); }
+    let drive = Math.min(1, lvl * 1.6);
+    if (st === 'speaking') drive = .45 + .3 * Math.sin(now / 90) * Math.sin(now / 37);
+    if (st === 'thinking') drive = .35;
+    level += (drive - level) * Math.min(1, dt * 8);
+    phase += dt * (0.5 + level * 0.7) * (st === 'thinking' ? 3.2 : 1);
+    open += ((window.__open ? 1 : 0) - open) * Math.min(1, dt * 1.6);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform3fv(uColor, col); gl.uniform3fv(uHot, hot); gl.uniform1f(uLevel, level);
+    gl.uniform1f(uPhase, phase); gl.uniform1f(uOpen, open * 1.6); gl.uniform1f(uZoom, 1.15);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+
+/* ---------- floating particles in the background */
+(() => {
+  const cv = $('#motes'), ctx = cv.getContext('2d'); let W, H;
+  const fit = () => { W = cv.width = innerWidth; H = cv.height = innerHeight; };
+  fit(); addEventListener('resize', fit);
+  const motes = Array.from({length: 90}, () => ({x: Math.random(), y: Math.random(), z: Math.random(), s: Math.random() * 6.28}));
+  (function draw(t){
+    ctx.clearRect(0, 0, W, H);
+    const amber = document.body.classList.contains('listening');
+    for (const m of motes) {
+      m.y -= (0.00008 + m.z * 0.00025); m.x += Math.sin(t / 3000 + m.s) * 0.00008;
+      if (m.y < -0.02) { m.y = 1.02; m.x = Math.random(); }
+      const a = (0.15 + m.z * 0.45) * (0.6 + 0.4 * Math.sin(t / 700 + m.s));
+      ctx.fillStyle = amber ? `rgba(255,178,63,${a})` : `rgba(90,220,255,${a})`;
+      ctx.beginPath(); ctx.arc(m.x * W, m.y * H, 0.6 + m.z * 1.6, 0, 6.28); ctx.fill();
+    }
+    requestAnimationFrame(draw);
+  })(0);
+})();
+
 /* ---------- boot */
 window.addEventListener('pywebviewready', async () => {
   const cfg = await api().ui_ready();
   $('#ver').textContent = 'v' + await api().version();
   refreshVoiceInd(cfg);
-  if (!cfg.has_claude) openSettings(cfg);
+  if (!cfg.has_claude && !cfg.has_groq) openSettings(cfg);
 });
 </script>
 </body>
