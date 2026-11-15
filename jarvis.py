@@ -1879,6 +1879,7 @@ class PhoneLink:
                                    {"hash": info["hash"], "seconds": info["seconds"]})
                 except Exception as e:
                     log.warning(f"intro to phone: {e}")
+                    self.reply({"type": "intro_error", "text": str(e)[:200]})
         elif m.get("type") == "routines":
             self.reply({"type": "routines", "names": list(routines())})
         elif m.get("type") == "routine":
