@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "3.4"
+VERSION = "3.5"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -168,9 +168,7 @@ class Speaker:
     def _gemini(self, text):
         import httpx, base64, re
         key = CFG["gemini_api_key"].strip()
-        prompt = ("Read the following Hebrew text aloud in natural, fluent Israeli Hebrew, "
-                  "in the calm, confident, slightly warm tone of a loyal AI butler. "
-                  "Say only the text itself:\n" + text)
+        prompt = text          # only the words to say - any instruction here gets read aloud
         body = {"contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"responseModalities": ["AUDIO"],
                                      "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {
