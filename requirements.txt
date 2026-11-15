@@ -1,0 +1,14 @@
+anthropic>=0.40
+httpx
+pywebview>=5.0
+openwakeword>=0.6.0
+onnxruntime
+sounddevice
+numpy
+SpeechRecognition
+edge-tts
+pygame
+psutil
+pyautogui
+pyperclip
+ddgs

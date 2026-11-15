@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>J.A.R.V.I.S</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Rajdhani:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#01060b; --c:#3fd9ff; --c2:#a6f1ff; --cdim:rgba(63,217,255,.22); --cfaint:rgba(63,217,255,.08);
+  --amber:#ffb23f; --red:#ff4f5e; --green:#4dffb0; --text:#cdeffb; --muted:#5d8797;
+  --accent:var(--c);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:Rajdhani,"Segoe UI",sans-serif;overflow:hidden;user-select:none}
+body.listening{--accent:var(--amber)}
+body.thinking{--accent:var(--c2)}
+
+/* background grid + vignette + scanline */
+body::before{content:"";position:fixed;inset:0;pointer-events:none;
+  background:
+   radial-gradient(ellipse at 50% 50%, rgba(30,120,170,.20), transparent 62%),
+   repeating-linear-gradient(0deg, rgba(63,217,255,.045) 0 1px, transparent 1px 46px),
+   repeating-linear-gradient(90deg, rgba(63,217,255,.045) 0 1px, transparent 1px 46px);}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;
+  background:linear-gradient(180deg,transparent 0,rgba(63,217,255,.05) 50%,transparent 100%);
+  height:30%;animation:scan 7s linear infinite;opacity:.6}
+@keyframes scan{from{transform:translateY(-100%)}to{transform:translateY(400%)}}
+
+.app{position:relative;z-index:1;height:100%;display:grid;grid-template-rows:56px 1fr 74px;}
+/* ---------- top bar */
+.top{display:flex;align-items:center;justify-content:space-between;padding:0 22px;border-bottom:1px solid var(--cdim);
+  background:linear-gradient(180deg,rgba(63,217,255,.07),transparent)}
+.logo{font-family:Orbitron;font-weight:800;letter-spacing:.42em;color:var(--c);font-size:18px;text-shadow:0 0 14px rgba(63,217,255,.7)}
+.logo small{display:block;font-size:8.5px;letter-spacing:.35em;color:var(--muted);font-weight:400;margin-top:2px}
+.indicators{display:flex;gap:18px;font-family:Orbitron;font-size:10px;letter-spacing:.2em;color:var(--muted)}
+.ind{display:flex;align-items:center;gap:7px}
+.ind i{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.ind.on i{background:var(--green);box-shadow:0 0 8px var(--green)}
+.ind.warn i{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.ind.off i{background:var(--red);box-shadow:0 0 8px var(--red)}
+.topright{display:flex;align-items:center;gap:18px}
+#clock{font-family:Orbitron;font-size:20px;color:var(--c2);letter-spacing:.12em}
+#date{font-size:12px;color:var(--muted);letter-spacing:.15em;text-transform:uppercase;text-align:right}
+.iconbtn{background:none;border:1px solid var(--cdim);color:var(--c);width:36px;height:36px;border-radius:50%;cursor:pointer;display:grid;place-items:center;transition:.2s}
+.iconbtn:hover{background:var(--cfaint);box-shadow:0 0 12px var(--cdim)}
+
+/* ---------- main */
+.main{display:grid;grid-template-columns:270px 1fr 360px;min-height:0}
+.panel{padding:16px;display:flex;flex-direction:column;gap:14px;min-height:0}
+.left{border-right:1px solid var(--cdim)}
+.right{border-left:1px solid var(--cdim)}
+.ptitle{font-family:Orbitron;font-size:10.5px;letter-spacing:.3em;color:var(--c);display:flex;align-items:center;gap:8px}
+.ptitle::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--cdim),transparent)}
+.box{border:1px solid var(--cdim);background:rgba(4,22,34,.55);position:relative;padding:12px;clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px))}
+.gauges{display:flex;justify-content:space-between}
+.gauge{width:72px;text-align:center}
+.gauge svg{width:72px;height:72px;transform:rotate(-90deg)}
+.gauge .bg{stroke:var(--cfaint);fill:none;stroke-width:5}
+.gauge .fg{stroke:var(--c);fill:none;stroke-width:5;stroke-linecap:butt;transition:stroke-dashoffset .8s;filter:drop-shadow(0 0 4px var(--c))}
+.gauge .val{font-family:Orbitron;font-size:14px;color:var(--c2);margin-top:-48px;height:44px}
+.gauge .lbl{font-size:10px;letter-spacing:.25em;color:var(--muted);font-family:Orbitron}
+#actions{flex:1;overflow:auto;font-family:"Consolas",monospace;font-size:12px;color:var(--c2);display:flex;flex-direction:column;gap:6px;padding-right:4px}
+#actions div{opacity:.9;border-left:2px solid var(--c);padding-left:8px;animation:fadein .4s}
+#actions div span{color:var(--muted);margin-right:6px}
+.tips{font-size:13px;color:var(--muted);line-height:1.55}
+.tips b{color:var(--c2);font-weight:500}
+
+/* ---------- reactor */
+.center{display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative;min-height:0}
+.reactor{position:relative;width:min(46vh,430px);height:min(46vh,430px);cursor:pointer}
+.reactor svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.spin{transform-origin:50% 50%;animation:rot 30s linear infinite}
+.spin.r2{animation-duration:18s;animation-direction:reverse}
+.spin.r3{animation-duration:9s}
+.spin.r4{animation-duration:46s;animation-direction:reverse}
+body.thinking .spin{animation-duration:2.4s!important}
+body.thinking .spin.r2{animation-duration:1.6s!important}
+body.listening .spin.r3{animation-duration:3s}
+@keyframes rot{to{transform:rotate(360deg)}}
+.stroke{stroke:var(--accent);fill:none;transition:stroke .4s}
+.core{transform-origin:50% 50%;transition:transform .08s linear}
+.core-fill{fill:url(#coreGrad)}
+body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
+@keyframes talk{from{transform:scale(.94)}to{transform:scale(1.1)}}
+.glow{position:absolute;inset:28%;border-radius:50%;background:radial-gradient(circle,var(--accent) 0%,transparent 70%);opacity:.35;filter:blur(30px);transition:background .4s}
+#stateLabel{font-family:Orbitron;letter-spacing:.55em;font-size:13px;color:var(--accent);margin-top:26px;text-shadow:0 0 12px var(--accent);transition:color .4s}
+#hint{font-size:13px;color:var(--muted);margin-top:8px;letter-spacing:.08em}
+.corner{position:absolute;width:40px;height:40px;border-color:var(--cdim);border-style:solid}
+.corner.tl{top:20px;left:20px;border-width:1px 0 0 1px}.corner.tr{top:20px;right:20px;border-width:1px 1px 0 0}
+.corner.bl{bottom:20px;left:20px;border-width:0 0 1px 1px}.corner.br{bottom:20px;right:20px;border-width:0 1px 1px 0}
+
+/* ---------- transcript */
+#chat{flex:1;overflow:auto;display:flex;flex-direction:column;gap:10px;padding-right:4px;user-select:text}
+.msg{padding:9px 12px;font-size:15.5px;line-height:1.45;animation:fadein .35s;max-width:95%}
+.msg .who{font-family:Orbitron;font-size:9px;letter-spacing:.3em;margin-bottom:3px}
+.msg.user{align-self:flex-end;background:rgba(63,217,255,.07);border-right:2px solid var(--c2)}
+.msg.user .who{color:var(--muted);text-align:right}
+.msg.jarvis{align-self:flex-start;background:rgba(4,30,46,.7);border-left:2px solid var(--c);box-shadow:inset 0 0 20px rgba(63,217,255,.05)}
+.msg.jarvis .who{color:var(--c)}
+@keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1}}
+
+/* ---------- bottom */
+.bottom{display:flex;align-items:center;gap:12px;padding:0 22px;border-top:1px solid var(--cdim);background:linear-gradient(0deg,rgba(63,217,255,.06),transparent)}
+#cmd{flex:1;height:44px;background:rgba(0,10,18,.7);border:1px solid var(--cdim);color:var(--text);font:inherit;font-size:17px;padding:0 16px;outline:none;letter-spacing:.03em;clip-path:polygon(10px 0,100% 0,calc(100% - 10px) 100%,0 100%)}
+#cmd:focus{border-color:var(--c);box-shadow:0 0 18px rgba(63,217,255,.15)}
+#cmd::placeholder{color:var(--muted)}
+.btn{height:44px;min-width:44px;padding:0 16px;background:rgba(63,217,255,.08);border:1px solid var(--c);color:var(--c);font-family:Orbitron;font-size:11px;letter-spacing:.2em;cursor:pointer;display:flex;align-items:center;gap:8px;transition:.2s}
+.btn:hover{background:rgba(63,217,255,.2);box-shadow:0 0 16px var(--cdim)}
+.btn svg{width:18px;height:18px}
+.btn.ghost{border-color:var(--cdim);color:var(--muted)}
+.btn.hot{border-color:var(--amber);color:var(--amber);animation:hot 1.2s ease-in-out infinite alternate}
+@keyframes hot{to{box-shadow:0 0 18px rgba(255,178,63,.6)}}
+#wave{width:120px;height:44px}
+
+/* ---------- toasts */
+#toasts{position:fixed;top:68px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:20}
+.toast{background:rgba(2,18,28,.95);border:1px solid var(--c);color:var(--c2);padding:9px 18px;font-size:14px;animation:fadein .3s;letter-spacing:.04em}
+.toast.warn{border-color:var(--amber);color:var(--amber)}
+.toast.error{border-color:var(--red);color:#ffb3b9}
+
+/* ---------- settings */
+#settings{position:fixed;inset:0;background:rgba(0,4,8,.82);backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;z-index:30}
+#settings.open{display:flex}
+.sheet{width:min(640px,92vw);max-height:90vh;overflow:auto;border:1px solid var(--c);background:rgba(2,16,26,.97);padding:26px 30px;box-shadow:0 0 50px rgba(63,217,255,.15);user-select:text}
+.sheet h2{font-family:Orbitron;letter-spacing:.3em;font-size:16px;color:var(--c);margin-bottom:6px}
+.sheet .sub{color:var(--muted);font-size:14px;margin-bottom:18px}
+.field{margin-bottom:18px}
+.field label{display:block;font-family:Orbitron;font-size:10.5px;letter-spacing:.22em;color:var(--c2);margin-bottom:6px}
+.field .help{font-size:13.5px;color:var(--muted);margin-bottom:7px;line-height:1.45}
+.field .help a{color:var(--c);cursor:pointer;text-decoration:underline}
+.field input,.field select{width:100%;height:40px;background:#000a12;border:1px solid var(--cdim);color:var(--text);font:inherit;font-size:15px;padding:0 12px;outline:none}
+.field input:focus,.field select:focus{border-color:var(--c)}
+.row{display:flex;gap:10px}
+.row>*{flex:1}
+.ok{color:var(--green)} .bad{color:var(--red)}
+#saveMsg{font-size:14px;margin-top:10px;min-height:20px}
+.actions{display:flex;gap:10px;justify-content:flex-end;margin-top:6px}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:var(--cdim)}
+</style>
+</head>
+<body class="idle">
+<div class="app">
+  <!-- TOP -->
+  <header class="top">
+    <div class="logo">J.A.R.V.I.S<small>PERSONAL AI SYSTEM · ONLINE</small></div>
+    <div class="indicators">
+      <div class="ind" id="indBrain"><i></i>AI CORE</div>
+      <div class="ind" id="indMic"><i></i>AUDIO IN</div>
+      <div class="ind" id="indVoice"><i></i>VOICE</div>
+    </div>
+    <div class="topright">
+      <button class="btn ghost" id="updateBtn" title="Check for updates" style="height:36px;font-size:10px">UPDATE <span id="ver" style="opacity:.6"></span></button>
+      <div><div id="clock">--:--:--</div><div id="date"></div></div>
+      <button class="iconbtn" id="openSettings" title="Settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <section class="main">
+    <aside class="panel left">
+      <div class="ptitle">DIAGNOSTICS</div>
+      <div class="box gauges">
+        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gCpu" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vCpu">--</div><div class="lbl">CPU</div></div>
+        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gRam" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vRam">--</div><div class="lbl">RAM</div></div>
+        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gBat" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vBat">--</div><div class="lbl">PWR</div></div>
+      </div>
+      <div class="ptitle">ACTIVITY LOG</div>
+      <div class="box" style="flex:1;display:flex;min-height:0"><div id="actions"></div></div>
+      <div class="ptitle">TRY SAYING</div>
+      <div class="box tips">
+        <b>"Hey Jarvis"</b> … then:<br>
+        "Open Spotify" · "Close Chrome"<br>
+        "Play Back in Black on YouTube"<br>
+        "What's the weather tomorrow?"<br>
+        "Set a timer for 10 minutes"<br>
+        "Volume to 30" · "Take a screenshot"
+      </div>
+    </aside>
+
+    <div class="center">
+      <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+      <div class="reactor" id="reactor" title="Click to talk">
+        <div class="glow"></div>
+        <svg viewBox="-220 -220 440 440">
+          <defs>
+            <radialGradient id="coreGrad">
+              <stop offset="0" stop-color="#ffffff"/>
+              <stop offset=".35" style="stop-color:var(--accent);stop-opacity:.95"/>
+              <stop offset=".75" style="stop-color:var(--accent);stop-opacity:.18"/>
+              <stop offset="1" style="stop-color:var(--accent);stop-opacity:0"/>
+            </radialGradient>
+          </defs>
+          <!-- outer tick ring -->
+          <g class="spin r4" id="ticks"></g>
+          <circle class="stroke" r="200" stroke-width=".6" opacity=".35"/>
+          <!-- outer segmented arcs -->
+          <g class="spin">
+            <circle class="stroke" r="182" stroke-width="7" stroke-dasharray="60 26 18 26" opacity=".75"/>
+          </g>
+          <g class="spin r2">
+            <circle class="stroke" r="160" stroke-width="2" stroke-dasharray="300 80 40 80" opacity=".9"/>
+            <circle class="stroke" r="150" stroke-width="1" stroke-dasharray="2 6" opacity=".6"/>
+          </g>
+          <g class="spin r3">
+            <circle class="stroke" r="128" stroke-width="14" stroke-dasharray="8 12" opacity=".35"/>
+          </g>
+          <g class="spin r4">
+            <circle class="stroke" r="106" stroke-width="3" stroke-dasharray="120 46" opacity=".85"/>
+          </g>
+          <circle class="stroke" r="92" stroke-width="1" opacity=".5"/>
+          <g class="core" id="core">
+            <circle r="86" class="core-fill" opacity=".9"/>
+            <circle class="stroke" r="58" stroke-width="2" opacity=".8"/>
+            <circle class="stroke" r="40" stroke-width="1" opacity=".6"/>
+          </g>
+        </svg>
+      </div>
+      <div id="stateLabel">INITIALIZING</div>
+      <div id="hint">Say “Hey Jarvis” or click the core</div>
+    </div>
+
+    <aside class="panel right">
+      <div class="ptitle">COMMUNICATIONS</div>
+      <div id="chat"></div>
+    </aside>
+  </section>
+
+  <!-- BOTTOM -->
+  <footer class="bottom">
+    <canvas id="wave" width="240" height="88"></canvas>
+    <input id="cmd" placeholder="Type a command, sir…" autocomplete="off" spellcheck="false">
+    <button class="btn" id="talk" title="Talk">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>TALK
+    </button>
+    <button class="btn ghost" id="stop" title="Stop speaking">
+      <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>
+    </button>
+  </footer>
+</div>
+
+<div id="toasts"></div>
+
+<!-- SETTINGS -->
+<div id="settings">
+  <div class="sheet">
+    <h2>SYSTEM CONFIGURATION</h2>
+    <div class="sub">Paste your keys here once. They are saved only on this computer.</div>
+
+    <div class="field">
+      <label>1 · CLAUDE API KEY (THE BRAIN) — REQUIRED</label>
+      <div class="help">This lets Jarvis understand anything you say. Get it at
+        <a data-link="https://console.anthropic.com/settings/keys">console.anthropic.com</a> → sign up → Billing (add a few dollars) → API Keys → Create Key → copy.</div>
+      <input id="sClaude" type="password" placeholder="sk-ant-…">
+    </div>
+
+    <div class="field">
+      <label>2 · ELEVENLABS API KEY (THE VOICE) — OPTIONAL</label>
+      <div class="help">For a realistic voice. Get it at
+        <a data-link="https://elevenlabs.io/app/settings/api-keys">elevenlabs.io</a> → sign up (free plan works) → API Keys → Create → copy. Without it Jarvis uses a free British voice.</div>
+      <div class="row">
+        <input id="sEleven" type="password" placeholder="sk_…">
+        <button class="btn" id="loadVoices" style="flex:0 0 auto">LOAD VOICES</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>3 · VOICE</label>
+      <div class="help">Pick a voice from your ElevenLabs account. Tip: in ElevenLabs open <a data-link="https://elevenlabs.io/app/voice-library">Voice Library</a>, search "British butler", click "Add to my voices", then press LOAD VOICES again.</div>
+      <div class="row">
+        <select id="sVoice"><option value="">— press LOAD VOICES —</option></select>
+        <button class="btn ghost" id="testVoice" style="flex:0 0 auto">TEST</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>HOW SHOULD I ADDRESS YOU</label>
+        <input id="sName" placeholder="sir">
+      </div>
+      <div class="field">
+        <label>SPEECH RECOGNITION</label>
+        <select id="sStt">
+          <option value="google">Google (free)</option>
+          <option value="elevenlabs">ElevenLabs Scribe (more accurate)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>WAKE WORD SENSITIVITY — <span id="sensVal"></span></label>
+      <div class="help">If Jarvis doesn't hear "Hey Jarvis", move left. If he wakes up by himself, move right.</div>
+      <input id="sSens" type="range" min="0.2" max="0.8" step="0.05" style="padding:0;height:auto">
+    </div>
+
+    <div id="saveMsg"></div>
+    <div class="actions">
+      <button class="btn ghost" id="closeSettings">CLOSE</button>
+      <button class="btn" id="saveSettings">SAVE &amp; CONNECT</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = () => window.pywebview && window.pywebview.api;
+
+/* ---------- build tick ring */
+(() => {
+  const g = $('#ticks'); let h = '';
+  for (let i = 0; i < 120; i++) {
+    const a = i * 3 * Math.PI / 180, long = i % 10 === 0;
+    const r1 = 206, r2 = long ? 218 : 212;
+    h += `<line class="stroke" stroke-width="${long ? 1.6 : .8}" opacity="${long ? .9 : .45}" x1="${Math.cos(a)*r1}" y1="${Math.sin(a)*r1}" x2="${Math.cos(a)*r2}" y2="${Math.sin(a)*r2}"/>`;
+  }
+  g.innerHTML = h;
+})();
+
+/* ---------- clock */
+setInterval(() => {
+  const d = new Date();
+  $('#clock').textContent = d.toLocaleTimeString('en-GB');
+  $('#date').textContent = d.toLocaleDateString('en-GB', {weekday:'short', day:'2-digit', month:'short', year:'numeric'});
+}, 1000);
+
+/* ---------- waveform */
+const wave = $('#wave'), wctx = wave.getContext('2d');
+let lvl = 0, target = 0, phase = 0;
+function drawWave(){
+  lvl += (target - lvl) * .25; target *= .92; phase += .18;
+  const st = document.body.className;
+  const amp = st.includes('speaking') ? .5 + .35*Math.sin(phase*.7) : lvl;
+  wctx.clearRect(0,0,240,88);
+  wctx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--accent').trim() || '#3fd9ff';
+  wctx.lineWidth = 2; wctx.shadowBlur = 8; wctx.shadowColor = wctx.strokeStyle;
+  for (let k = 0; k < 2; k++){
+    wctx.globalAlpha = k ? .35 : .9; wctx.beginPath();
+    for (let x = 0; x <= 240; x += 4){
+      const env = Math.sin(Math.PI * x / 240);
+      const y = 44 + Math.sin(x*.07 + phase*(k?1.4:1)) * (4 + amp*34) * env * (k?.6:1);
+      x ? wctx.lineTo(x,y) : wctx.moveTo(x,y);
+    }
+    wctx.stroke();
+  }
+  $('#core').style.transform = `scale(${1 + Math.min(lvl,1)*.18})`;
+  requestAnimationFrame(drawWave);
+}
+drawWave();
+
+/* ---------- HUD API called from Python */
+const LABELS = {idle:'STANDBY', listening:'LISTENING', thinking:'PROCESSING', speaking:'RESPONDING'};
+const HINTS = {idle:'Say “Hey Jarvis” or click the core', listening:'Go ahead, I\'m listening…', thinking:'Working on it…', speaking:'Click ■ to interrupt'};
+window.hud = {
+  setState(s){
+    document.body.className = s;
+    $('#stateLabel').textContent = LABELS[s] || s.toUpperCase();
+    $('#hint').textContent = HINTS[s] || '';
+  },
+  addMessage(role, text){
+    const d = document.createElement('div');
+    d.className = 'msg ' + role;
+    d.innerHTML = `<div class="who">${role === 'user' ? 'YOU' : 'J.A.R.V.I.S'}</div>`;
+    d.appendChild(document.createTextNode(text));
+    const c = $('#chat'); c.appendChild(d); c.scrollTop = c.scrollHeight;
+  },
+  addAction(text){
+    const d = document.createElement('div');
+    d.innerHTML = `<span>${new Date().toLocaleTimeString('en-GB')}</span>`;
+    d.appendChild(document.createTextNode('▸ ' + text));
+    const a = $('#actions'); a.appendChild(d); a.scrollTop = a.scrollHeight;
+    while (a.children.length > 60) a.firstChild.remove();
+  },
+  toast(text, kind='info'){
+    const t = document.createElement('div'); t.className = 'toast ' + kind; t.textContent = text;
+    $('#toasts').appendChild(t); setTimeout(() => t.remove(), kind === 'info' ? 3500 : 7000);
+  },
+  level(v){ target = Math.max(target, v); },
+  updateAvailable(v){ const b = $('#updateBtn'); b.classList.remove('ghost'); b.classList.add('hot'); b.firstChild.textContent = 'UPDATE → ' + v + ' '; },
+  setStatus(s){
+    const set = (id, cls) => { const e = $(id); e.classList.remove('on','warn','off'); e.classList.add(cls); };
+    if (s.brain) set('#indBrain', s.brain === 'online' ? 'on' : 'warn');
+    if (s.mic) set('#indMic', s.mic === 'online' ? 'on' : 'off');
+    const g = (id, vid, v) => { if (v == null) return; $(id).style.strokeDashoffset = 188.5 * (1 - v/100); $(vid).textContent = Math.round(v) + '%'; };
+    g('#gCpu', '#vCpu', s.cpu); g('#gRam', '#vRam', s.ram);
+    if ('battery' in s){ if (s.battery == null){ $('#vBat').textContent = 'AC'; $('#gBat').style.strokeDashoffset = 0; } else g('#gBat', '#vBat', s.battery); }
+  }
+};
+
+/* ---------- controls */
+function send(){
+  const v = $('#cmd').value.trim(); if (!v || !api()) return;
+  $('#cmd').value = ''; api().send_text(v);
+}
+$('#cmd').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+$('#talk').onclick = () => api() && api().push_to_talk();
+$('#reactor').onclick = () => api() && api().push_to_talk();
+$('#stop').onclick = () => api() && api().stop_speaking();
+document.querySelectorAll('[data-link]').forEach(a => a.onclick = () => api() && api().open_link(a.dataset.link));
+
+/* ---------- settings */
+function openSettings(cfg){
+  $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'Saved ' + cfg.claude_mask + ' (leave empty to keep)' : 'sk-ant-…';
+  $('#sEleven').value = ''; $('#sEleven').placeholder = cfg.has_eleven ? 'Saved ' + cfg.eleven_mask + ' (leave empty to keep)' : 'sk_…';
+  if (cfg.voice_id){ $('#sVoice').innerHTML = `<option value="${cfg.voice_id}">${cfg.voice_name || cfg.voice_id}</option>`; }
+  $('#sName').value = cfg.user_name || 'sir';
+  $('#sStt').value = cfg.speech_recognition || 'google';
+  $('#sSens').value = cfg.wake_threshold; $('#sensVal').textContent = cfg.wake_threshold;
+  $('#saveMsg').textContent = '';
+  $('#settings').classList.add('open');
+}
+$('#sSens').oninput = e => $('#sensVal').textContent = e.target.value;
+$('#openSettings').onclick = async () => openSettings(await api().get_settings());
+$('#closeSettings').onclick = () => $('#settings').classList.remove('open');
+$('#loadVoices').onclick = async () => {
+  const sel = $('#sVoice'); sel.innerHTML = '<option>Loading…</option>';
+  const r = await api().list_voices($('#sEleven').value);
+  if (!r.ok){ sel.innerHTML = '<option value="">— error —</option>'; $('#saveMsg').innerHTML = `<span class="bad">${r.error}</span>`; return; }
+  if (!r.voices.length){ sel.innerHTML = '<option value="">No voices yet — add one from the Voice Library</option>'; return; }
+  const pref = r.voices.findIndex(v => /british/i.test(v.desc) && /male/i.test(v.desc) && !/female/i.test(v.desc));
+  sel.innerHTML = r.voices.map((v,i) => `<option value="${v.id}" ${i === pref ? 'selected' : ''}>${v.name}${v.desc ? ' — ' + v.desc : ''}</option>`).join('');
+};
+$('#testVoice').onclick = async () => { await save(true); api().test_voice(); };
+async function save(quiet){
+  const sel = $('#sVoice'), opt = sel.options[sel.selectedIndex];
+  $('#saveMsg').innerHTML = '<span>Connecting…</span>';
+  const r = await api().save_settings({
+    claude_key: $('#sClaude').value, eleven_key: $('#sEleven').value,
+    voice_id: sel.value, voice_name: opt ? opt.text.split(' — ')[0] : '',
+    user_name: $('#sName').value, wake_threshold: $('#sSens').value, speech_recognition: $('#sStt').value
+  });
+  if (r.claude === 'ok') $('#saveMsg').innerHTML = '<span class="ok">✔ Saved. AI core connected.</span>';
+  else if (r.claude) $('#saveMsg').innerHTML = `<span class="bad">Saved, but Claude refused the key: ${r.claude}</span>`;
+  else $('#saveMsg').innerHTML = '<span class="ok">Saved. (No Claude key yet — basic mode.)</span>';
+  refreshVoiceInd(await api().get_settings());
+  if (!quiet && r.claude === 'ok') setTimeout(() => $('#settings').classList.remove('open'), 1200);
+}
+$('#saveSettings').onclick = () => save(false);
+function refreshVoiceInd(cfg){
+  const e = $('#indVoice'); e.classList.remove('on','warn','off');
+  e.classList.add(cfg.has_eleven && cfg.voice_id ? 'on' : 'warn');
+}
+
+$('#updateBtn').onclick = async () => {
+  const b = $('#updateBtn'); b.disabled = true; b.firstChild.textContent = 'UPDATING… ';
+  const r = await api().update_now();
+  if (!r.ok){ hud.toast('Update failed: ' + r.error, 'error'); b.firstChild.textContent = 'UPDATE '; }
+  else if (!r.updated){ hud.toast(r.message); b.firstChild.textContent = 'UPDATE '; }
+  else { hud.toast('Updated to ' + r.version + ' - restarting…'); b.firstChild.textContent = 'RESTARTING… '; }
+  b.disabled = false;
+};
+/* ---------- boot */
+window.addEventListener('pywebviewready', async () => {
+  const cfg = await api().ui_ready();
+  $('#ver').textContent = 'v' + await api().version();
+  refreshVoiceInd(cfg);
+  if (!cfg.has_claude) openSettings(cfg);
+});
+</script>
+</body>
+</html>
