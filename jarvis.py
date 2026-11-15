@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "3.5"
+VERSION = "3.6"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -61,7 +61,7 @@ DEFAULT_CONFIG = {
     "user_name": "אדוני",
     "wake_threshold": 0.5,
     "follow_up_seconds": 6,
-    "min_confidence": 0.5,                  # speech below this confidence is ignored (non-English, noise)
+    "min_confidence": 0.35,                  # speech below this confidence is ignored (non-English, noise)
 }
 
 
@@ -85,8 +85,8 @@ def load_config():
         cfg["voice"] = "he-IL-AvriNeural"
     if cfg.get("user_name", "").lower() in ("", "sir"):
         cfg["user_name"] = "אדוני"
-    if cfg.get("min_confidence", 0.5) > 0.5:
-        cfg["min_confidence"] = 0.5
+    if cfg.get("min_confidence", 0.35) > 0.35:
+        cfg["min_confidence"] = 0.35                       # Hebrew gets lower confidence scores
     if cfg.get("claude_model") == "claude-sonnet-5-5":   # move old installs to the cheap model
         cfg["claude_model"] = "claude-haiku-5-5"
     return cfg
@@ -222,49 +222,91 @@ class Speaker:
                     ui.toast("הקול של Gemini לא עבד - משתמש בקול הרגיל. בדוק את המפתח בהגדרות.", "warn")
         return self._edge(text)
 
+    @staticmethod
+    def split_for_speech(text):
+        """First sentence alone (so speech starts fast), the rest together."""
+        import re
+        parts = [p for p in re.split(r"(?<=[.!?…])\s+", text.strip()) if p]
+        if len(parts) <= 1:
+            return [text.strip()]
+        first = parts[0]
+        i = 1
+        while len(first) < 25 and i < len(parts):      # avoid a tiny first chunk
+            first += " " + parts[i]
+            i += 1
+        rest = " ".join(parts[i:])
+        return [first] + ([rest] if rest else [])
+
     def say(self, text, show=True):
         if not text:
             return
         with self.lock:
             self._stop = False
-            if show:
+            pieces = self.split_for_speech(text)
+            q = queue.Queue()
+
+            def produce():
+                for piece in pieces:
+                    if self._stop:
+                        break
+                    try:
+                        q.put(self.synth(piece))
+                    except Exception as e:
+                        q.put(e)
+                q.put(None)
+            threading.Thread(target=produce, daemon=True).start()
+            shown = False
+            failed = False
+            while True:
+                audio = q.get()
+                if audio is None:
+                    break
+                if isinstance(audio, Exception):
+                    log.error(f"TTS failed: {audio}")
+                    failed = True
+                    continue
+                if show and not shown:
+                    ui.say("jarvis", text)          # text appears together with the voice
+                    shown = True
+                self._play(audio)
+                if self._stop:
+                    break
+            if show and not shown:
                 ui.say("jarvis", text)
-            try:
-                audio = self.synth(text)
-            except Exception as e:
-                log.error(f"TTS failed: {e}")
+            if failed and not shown:
                 ui.toast("ההקראה נכשלה (אין אינטרנט?)", "warn")
-                return
-            self._play(audio)
+            ui.state("idle")
 
     def play_bytes(self, audio, text=""):
         with self.lock:
             self._stop = False
             self._play(audio)
+            ui.state("idle")
 
     def _play(self, audio):
-            ext = ".wav" if audio[:4] == b"RIFF" else ".mp3"
-            path = os.path.join(tempfile.gettempdir(), f"jarvis_{int(time.time()*1000)}{ext}")
-            with open(path, "wb") as f:
-                f.write(audio)
-            ui.state("speaking")
+        ext = ".wav" if audio[:4] == b"RIFF" else ".mp3"
+        path = os.path.join(tempfile.gettempdir(), f"jarvis_{int(time.time()*1000)}{ext}")
+        with open(path, "wb") as f:
+            f.write(audio)
+        ui.state("speaking")
+        try:
+            m = self.pygame.mixer.music
+            m.load(path)
+            m.play()
+            while m.get_busy() and not self._stop:
+                time.sleep(0.03)
+            m.stop()
             try:
-                m = self.pygame.mixer.music
-                m.load(path)
-                m.play()
-                while m.get_busy() and not self._stop:
-                    time.sleep(0.04)
-                m.stop()
-                try:
-                    m.unload()
-                except Exception:
-                    pass
-            finally:
-                try:
-                    os.remove(path)
-                except Exception:
-                    pass
-                ui.state("idle")
+                m.unload()
+            except Exception:
+                pass
+        except Exception as e:
+            log.error(f"playback failed: {e}")
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
     def stop(self):
         self._stop = True
@@ -289,7 +331,24 @@ class Ears:
             openwakeword.utils.download_models(model_names=["hey_jarvis"])
         except TypeError:
             openwakeword.utils.download_models()
-        self.ww = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+        try:   # built-in voice detector cuts false "Hey Jarvis" triggers from noise
+            self.ww = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx", vad_threshold=0.3)
+        except Exception:
+            self.ww = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+        self.vad = None
+        try:
+            from openwakeword.vad import VAD
+            try:
+                self.vad = VAD()
+            except Exception:
+                openwakeword.utils.download_models()
+                self.vad = VAD()
+            self.vad.predict(np.zeros(CHUNK, dtype=np.int16), frame_size=640)
+            log.info("speech detector: neural VAD")
+        except Exception as e:
+            self.vad = None
+            log.warning(f"neural VAD unavailable, using volume detection: {e}")
+        self.noise = 300.0          # running estimate of background noise (RMS)
         self.rec = sr.Recognizer()
         self.stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=CHUNK)
         self.stream.start()
@@ -298,11 +357,26 @@ class Ears:
     def read(self):
         data, _ = self.stream.read(CHUNK)
         chunk = data[:, 0].copy()
+        self.last_rms = float(self.np.sqrt(self.np.mean(chunk.astype(self.np.float32) ** 2)))
         self._n += 1
         if self._n % 2 == 0:
-            rms = float(self.np.sqrt(self.np.mean(chunk.astype(self.np.float32) ** 2)))
-            ui.level(min(1.0, rms / 4000))
+            ui.level(min(1.0, self.last_rms / 4000))
         return chunk
+
+    def speech_prob(self, chunk):
+        """0..1 - how sure we are that this 80ms chunk is human speech."""
+        if self.vad is not None:
+            try:
+                return float(self.vad.predict(chunk, frame_size=640))
+            except Exception:
+                pass
+        thr = max(350.0, self.noise * 2.5)
+        return 1.0 if self.last_rms > thr else 0.0
+
+    def learn_noise(self):
+        """Called while idle: slowly track the room's background noise."""
+        if getattr(self, "last_rms", None) is not None and self.last_rms < self.noise * 3:
+            self.noise = 0.97 * self.noise + 0.03 * max(50.0, self.last_rms)
 
     def flush(self):
         try:
@@ -313,6 +387,7 @@ class Ears:
         self.ww.reset()
 
     def heard_wake_word(self, chunk):
+        self.learn_noise()
         pred = self.ww.predict(chunk)
         if pred and max(pred.values()) >= float(CFG["wake_threshold"]):
             self.ww.reset()
@@ -329,34 +404,46 @@ class Ears:
         except Exception:
             pass
 
-    def listen(self, start_timeout=6.0, max_seconds=15.0, silence_end=1.0):
+    def listen(self, start_timeout=6.0, max_seconds=15.0, silence_end=0.8):
+        """Record one sentence. Starts only on real speech, keeps the first syllable, stops after a pause."""
+        from collections import deque
         np = self.np
+        time.sleep(0.15)                     # let the beep / Jarvis's own voice die out
         self.flush()
         ui.state("listening")
-        noise = [np.sqrt(np.mean(self.read().astype(np.float32) ** 2)) for _ in range(3)]
-        threshold = max(320.0, float(np.mean(noise)) * 2.2)
-        frames, started, silent, waited, total = [], False, 0.0, 0.0, 0.0
         step = CHUNK / SAMPLE_RATE
+        pre = deque(maxlen=4)                # 320ms before speech starts (so words aren't cut)
+        recent = deque(maxlen=3)
+        frames, voiced, started, silent, waited, total = [], 0, False, 0.0, 0.0, 0.0
         while True:
             c = self.read()
-            rms = float(np.sqrt(np.mean(c.astype(np.float32) ** 2)))
+            p = self.speech_prob(c)
             if not started:
                 waited += step
-                if rms > threshold:
+                pre.append(c)
+                recent.append(p >= 0.5)
+                if sum(recent) >= 2:         # speech in 2 of the last 3 chunks -> real talking
                     started = True
-                    frames.append(c)
+                    frames.extend(pre)
+                    voiced = 2
                 elif waited > start_timeout:
                     ui.state("idle")
                     return None
                 continue
             frames.append(c)
             total += step
-            silent = silent + step if rms < threshold else 0.0
+            if p >= 0.35:
+                silent = 0.0
+                voiced += 1
+            else:
+                silent += step
             if silent >= silence_end or total >= max_seconds:
                 break
+        if voiced < 4:                       # under ~0.3s of speech = a cough / click, ignore
+            ui.state("idle")
+            return None
         ui.state("thinking")
-        pcm = np.concatenate(frames).tobytes()
-        return self.transcribe(pcm)
+        return self.transcribe(np.concatenate(frames).tobytes())
 
     def transcribe(self, pcm):
         """Returns English text, or None if the speech was not clearly English."""
@@ -1187,7 +1274,11 @@ class Assistant:
                     answer = "אני לא מצליח להגיע לשרתים כרגע. תבדוק את החיבור לאינטרנט."
                 else:
                     answer = f"משהו השתבש אצלי. השגיאה מופיעה על המסך, {CFG['user_name']}."
-        if not answer or "[IGNORE]" in answer:
+        if answer:   # never read out brackets, markdown or links
+            import re as _re
+            answer = _re.sub(r"\[[^\]]*\]|https?://\S+|[*#_`>]", "", answer)
+            answer = _re.sub(r"\s{2,}", " ", answer).strip()
+        if not answer or "IGNORE" in answer:
             log.info(f"ignored: {text}")
             ui.state("idle")
             return False
