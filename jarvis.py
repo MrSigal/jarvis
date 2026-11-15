@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "4.5"
+VERSION = "4.6"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -2332,7 +2332,10 @@ class Api:
         except Exception as e:
             qr = ""
             log.error(f"qr: {e}")
-        return {"url": PHONE.pair_url(), "qr": qr}
+        return {"url": PHONE.pair_url(), "qr": qr, "code": CFG["phone_secret"]}
+
+    def phone_send_link(self):
+        return send_whatsapp("הקישור לאפליקציית ג'רוויס באייפון (פתח בספארי ואז 'הוסף למסך הבית'):\n" + PHONE.pair_url())
 
     def copy_text(self, text):
         try:

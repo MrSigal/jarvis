@@ -72,6 +72,12 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
     <li>סורקים את הקוד עם המצלמה של האייפון ופותחים את הקישור.</li>
     <li>בספארי: שיתוף <b>⬆︎</b> ← <b>"הוסף למסך הבית"</b>.</li>
   </ol>
+  <p style="color:var(--muted);font-size:14px">או: מעתיקים את קוד החיבור מההגדרות במחשב ומדביקים כאן</p>
+  <div style="display:flex;gap:8px;width:100%;max-width:360px">
+    <input id="pairCode" placeholder="קוד חיבור" dir="ltr" style="flex:1;height:46px;border-radius:23px;background:#000a12;border:1px solid var(--cdim);color:var(--text);font-size:16px;padding:0 16px;outline:none">
+    <button id="pairBtn" style="height:46px;padding:0 20px;border-radius:23px;border:1px solid var(--c);background:rgba(63,217,255,.12);color:var(--c);font:inherit;font-size:16px">חבר</button>
+  </div>
+  <div id="pairErr" style="color:var(--red);font-size:14px;min-height:18px"></div>
 </div>
 
 <script>
@@ -84,8 +90,19 @@ const store = { get(k, d){ try { const v = localStorage.getItem(k); return v ===
                 set(k, v){ try { localStorage.setItem(k, v); } catch(e){} } };
 
 // ---------- pairing: the PC shows a QR with #k=<secret>
-(() => { const m = location.hash.match(/k=([\w-]+)/); if (m) { store.set('jarvis_secret', m[1]); history.replaceState(null, '', location.pathname); } })();
+function keyFrom(text){ const m = String(text || '').match(/k=([\w-]{16,})/) || String(text || '').trim().match(/^([\w-]{16,})$/); return m ? m[1] : ''; }
+(() => { const k = keyFrom(location.hash); if (k) store.set('jarvis_secret', k); })();
 const SECRET = store.get('jarvis_secret', '');
+// iPhone: an app added to the Home Screen does not share Safari's storage, so the key also lives in its start address
+if (SECRET) {
+  if (!location.hash.includes('k=')) history.replaceState(null, '', location.pathname + '#k=' + SECRET);
+  const man = {name: 'J.A.R.V.I.S', short_name: 'JARVIS', lang: 'he', dir: 'rtl', display: 'standalone',
+    start_url: new URL('./#k=' + SECRET, location.href).href, scope: new URL('./', location.href).href,
+    background_color: '#01060b', theme_color: '#01060b',
+    icons: [{src: new URL('icon-192.png', location.href).href, sizes: '192x192', type: 'image/png'},
+            {src: new URL('icon-512.png', location.href).href, sizes: '512x512', type: 'image/png'}]};
+  document.querySelector('link[rel=manifest]').href = 'data:application/manifest+json,' + encodeURIComponent(JSON.stringify(man));
+}
 if (!SECRET) $('#pair').classList.add('show');
 if (!navigator.standalone && /iPhone|iPad/.test(navigator.userAgent) && SECRET) $('#install').style.display = 'block';
 
@@ -235,6 +252,11 @@ $('#form').onsubmit = e => { e.preventDefault(); const t = $('#inp').value; $('#
 
 // ---------- start
 if (SECRET) initCrypto().then(() => { listen(); ping(); setInterval(ping, 60000); add('sys', 'שלום! כתוב או לחץ על המיקרופון ודבר עם ג\'רוויס.'); });
+$('#pairBtn').onclick = () => {
+  const k = keyFrom($('#pairCode').value);
+  if (!k) { $('#pairErr').textContent = 'הקוד לא נראה נכון. העתק אותו שוב מההגדרות במחשב.'; return; }
+  store.set('jarvis_secret', k); location.replace(location.pathname + '#k=' + k); location.reload();
+};
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>

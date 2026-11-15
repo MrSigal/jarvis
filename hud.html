@@ -396,11 +396,13 @@ body.gl .reactor .glow{opacity:.18}
       <div style="display:flex;gap:14px;align-items:center">
         <img id="phoneQr" alt="" style="width:150px;height:150px;background:#fff;border-radius:6px">
         <div style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn ghost" id="phoneWa" style="flex:0 0 auto">שלח קישור לוואטסאפ</button>
           <button class="btn ghost" id="phoneCopy" style="flex:0 0 auto">העתק קישור</button>
           <button class="btn ghost" id="phoneNew" style="flex:0 0 auto" title="מנתק טלפונים שכבר חוברו">צור קוד חדש</button>
           <div id="phoneMsg" style="font-size:13px"></div>
         </div>
       </div>
+      <div class="help" style="margin-top:8px">קוד החיבור (אפשר גם להקליד אותו באפליקציה): <b id="phoneCode" dir="ltr" style="font-family:Consolas,monospace;letter-spacing:.06em;user-select:all"></b></div>
     </div>
 
     <div class="field">
@@ -553,7 +555,7 @@ function openSettings(cfg){
   $('#sGroq').value = ''; $('#sGroq').placeholder = cfg.has_groq ? 'שמור ' + cfg.groq_mask + ' (השאר ריק כדי לא לשנות)' : 'gsk_…';
   $('#sStt').value = cfg.stt_engine || 'google';
   showBrain();
-  api().phone_pair(false).then(p => { $('#phoneQr').src = p.qr; $('#phoneQr').dataset.url = p.url; });
+  api().phone_pair(false).then(p => { $('#phoneQr').src = p.qr; $('#phoneQr').dataset.url = p.url; $('#phoneCode').textContent = p.code; });
   $('#phoneMsg').textContent = '';
   $('#sMail').value = cfg.mail_address || '';
   $('#sMailPw').value = ''; $('#sMailPw').placeholder = cfg.has_mail_pw ? 'שמורה (השאר ריק כדי לא לשנות)' : 'סיסמת אפליקציה';
@@ -603,7 +605,8 @@ function showWa(){
 }
 $('#sWaProv').onchange = showWa;
 $('#phoneCopy').onclick = async () => { const ok = await api().copy_text($('#phoneQr').dataset.url || ''); $('#phoneMsg').innerHTML = ok ? '<span class="ok">הקישור הועתק</span>' : ''; };
-$('#phoneNew').onclick = async () => { const p = await api().phone_pair(true); $('#phoneQr').src = p.qr; $('#phoneQr').dataset.url = p.url; $('#phoneMsg').innerHTML = '<span class="ok">נוצר קוד חדש. טלפונים ישנים נותקו.</span>'; };
+$('#phoneWa').onclick = async () => { $('#phoneMsg').textContent = 'שולח…'; const r = await api().phone_send_link(); $('#phoneMsg').innerHTML = r.ok ? '<span class="ok">נשלח! פתח את הקישור בוואטסאפ באייפון.</span>' : `<span class="bad">${r.error}</span>`; };
+$('#phoneNew').onclick = async () => { const p = await api().phone_pair(true); $('#phoneQr').src = p.qr; $('#phoneQr').dataset.url = p.url; $('#phoneCode').textContent = p.code; $('#phoneMsg').innerHTML = '<span class="ok">נוצר קוד חדש. טלפונים ישנים נותקו.</span>'; };
 $('#mailTest').onclick = async () => {
   await save(true);
   $('#mailMsg').innerHTML = '<span>מתחבר…</span>';
