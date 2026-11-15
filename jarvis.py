@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "4.0"
+VERSION = "4.1"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -45,6 +45,7 @@ CONFIG_FILE = DATA_DIR / "config.json"
 LOG_FILE = DATA_DIR / "jarvis.log"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 REMINDERS = None
+BACKGROUND_START = "--background" in sys.argv
 OS = platform.system()
 SAMPLE_RATE = 16000
 CHUNK = 1280  # 80 ms, what openWakeWord expects
@@ -70,6 +71,9 @@ DEFAULT_CONFIG = {
     "whatsapp_apikey": "",
     "whatsapp_when_away": True,             # reminders/timers also go to WhatsApp when you're away from the PC
     "away_minutes": 5,
+    "run_in_background": True,              # closing the window keeps JARVIS listening (icon near the clock)
+    "start_with_windows": True,             # start hidden when the PC starts
+    "auto_hide": True,                      # window pops up on "Hey Jarvis" and hides again afterwards
     "tts_engine": "edge",                   # edge (fast, built-in) | gemini (Google, most natural)
     "gemini_api_key": "",                   # free key from aistudio.google.com/apikey
     "gemini_voice": "Charon",
@@ -145,6 +149,33 @@ class UI:
                 self.window.evaluate_js(code)
             except Exception:
                 pass
+
+    def show_window(self):
+        """Bring the window up (used when JARVIS is woken while hidden)."""
+        w = self.window
+        if not w:
+            return False
+        was_hidden = not getattr(self, "visible", True)
+        try:
+            w.show()
+            w.restore()
+            self.visible = True
+            if OS == "Windows":
+                import ctypes
+                hwnd = ctypes.windll.user32.FindWindowW(None, "J.A.R.V.I.S")
+                if hwnd:
+                    ctypes.windll.user32.ShowWindow(hwnd, 9)
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception as e:
+            log.error(f"show window: {e}")
+        return was_hidden
+
+    def hide_window(self):
+        try:
+            self.window.hide()
+            self.visible = False
+        except Exception as e:
+            log.error(f"hide window: {e}")
 
     def state(self, s):            self.js("setState", s)
     def say(self, role, text):     self.js("addMessage", role, text)
@@ -1496,8 +1527,11 @@ class Assistant:
             if to_phone:
                 r = send_whatsapp(ev.get("phone_text") or ev["text"])
                 ui.action("נשלח לוואטסאפ" if r.get("ok") else "✗ " + r.get("error", ""))
+            popped = not getattr(ui, "visible", True) and ui.show_window()
             if self.speaker:
                 self.speaker.say(ev["text"])
+            if popped and CFG.get("auto_hide", True):
+                self.schedule_hide()
 
     def quick_command(self, text):
         """Open/close commands are done directly - instant, free and reliable."""
@@ -1636,7 +1670,8 @@ class Assistant:
             ui.toast("המיקרופון לא זמין. אפשר להקליד פקודות.", "error")
         h = datetime.now().hour
         part = "בוקר טוב" if 5 <= h < 12 else "צהריים טובים" if h < 17 else "ערב טוב" if h < 22 else "לילה טוב"
-        self.speaker.say(f"{part}, {CFG['user_name']}. כל המערכות פועלות.")
+        if not BACKGROUND_START:
+            self.speaker.say(f"{part}, {CFG['user_name']}. כל המערכות פועלות.")
         def bg_check():
             info = check_update()
             if info.get("available"):
@@ -1646,6 +1681,10 @@ class Assistant:
 
         while True:
             kind, payload = self.wait_trigger()
+            popped = False
+            if kind == "voice" and not getattr(ui, "visible", True):
+                popped = ui.show_window()            # woken while hidden -> show the window
+            self.cancel_hide()
             if kind == "text":
                 self.think(payload)
                 continue
@@ -1661,6 +1700,19 @@ class Assistant:
                     break
                 self.ears.beep(1318, 0.06)
                 q = self.ears.listen(start_timeout=float(CFG["follow_up_seconds"]))
+            if popped and CFG.get("auto_hide", True):
+                self.schedule_hide()
+
+    def schedule_hide(self, delay=12):
+        self.cancel_hide()
+        self._hide_timer = threading.Timer(delay, ui.hide_window)
+        self._hide_timer.daemon = True
+        self._hide_timer.start()
+
+    def cancel_hide(self):
+        t = getattr(self, "_hide_timer", None)
+        if t:
+            t.cancel()
 
 
 assistant = Assistant()
@@ -1680,6 +1732,8 @@ class Api:
             "has_claude": bool(CFG["anthropic_api_key"]), "claude_mask": _mask(CFG["anthropic_api_key"]),
             "brain_engine": CFG.get("brain_engine", "claude"), "stt_engine": CFG.get("stt_engine", "google"),
             "has_groq": bool(CFG.get("groq_api_key")), "groq_mask": _mask(CFG.get("groq_api_key", "")),
+            "bg": bool(CFG.get("run_in_background", True)), "autostart": bool(CFG.get("start_with_windows", True)),
+            "auto_hide": bool(CFG.get("auto_hide", True)),
             "wa_phone": CFG.get("whatsapp_phone", ""), "has_wa": bool(CFG.get("whatsapp_apikey")),
             "wa_mask": _mask(CFG.get("whatsapp_apikey", "")), "wa_away": bool(CFG.get("whatsapp_when_away", True)),
             "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
@@ -1693,6 +1747,11 @@ class Api:
             CFG["anthropic_api_key"] = s["claude_key"].strip()
         if s.get("voice"):
             CFG["voice"] = s["voice"]
+        for k_ui, k_cfg in (("bg", "run_in_background"), ("autostart", "start_with_windows"), ("auto_hide", "auto_hide")):
+            if k_ui in s:
+                CFG[k_cfg] = bool(s[k_ui])
+        if "autostart" in s:
+            threading.Thread(target=set_start_with_windows, args=(bool(s["autostart"]),), daemon=True).start()
         if "wa_phone" in s:
             ph = "".join(ch for ch in str(s["wa_phone"]) if ch.isdigit() or ch == "+")
             if ph.startswith("0"):
@@ -1794,7 +1853,11 @@ class Api:
                     w.maximize()
                 self._maxed = not getattr(self, "_maxed", False)
             elif action == "close":
-                w.destroy()
+                if CFG.get("run_in_background", True):
+                    ui.hide_window()              # keeps listening for "Hey Jarvis"
+                    ui.toast("ג'רוויס ממשיך להקשיב ברקע")
+                else:
+                    os._exit(0)
         except Exception as e:
             log.error(f"window action {action}: {e}")
 
@@ -1807,6 +1870,62 @@ class Api:
 
 
 # ======================================================================= MAIN
+def start_tray():
+    """Icon next to the clock: open JARVIS / quit."""
+    try:
+        import pystray
+        from PIL import Image
+        img = Image.open(str(HERE / "assets" / "jarvis.ico"))
+
+        def open_(icon, item):
+            ui.show_window()
+
+        def quit_(icon, item):
+            icon.stop()
+            os._exit(0)
+        icon = pystray.Icon("JARVIS", img, "J.A.R.V.I.S - מאזין ל\"היי ג'רוויס\"",
+                            menu=pystray.Menu(pystray.MenuItem("פתח את ג'רוויס", open_, default=True),
+                                              pystray.MenuItem("יציאה", quit_)))
+        icon.run_detached()
+        return icon
+    except Exception as e:
+        log.warning(f"tray icon unavailable: {e}")
+        return None
+
+
+def startup_shortcut_path():
+    return Path(os.environ.get("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs/Startup/JARVIS.lnk"
+
+
+def set_start_with_windows(enabled):
+    """Create/remove the Startup shortcut that launches JARVIS hidden in the background."""
+    if OS != "Windows":
+        return
+    lnk = startup_shortcut_path()
+    try:
+        if not enabled:
+            if lnk.exists():
+                lnk.unlink()
+            return
+        if FROZEN:
+            target, args, workdir = sys.executable, "--background", str(Path(sys.executable).parent)
+        else:
+            pyw = Path(sys.executable)
+            if pyw.name.lower() == "python.exe":
+                pyw = pyw.with_name("pythonw.exe")
+            target, args, workdir = str(pyw), f'"{HERE / "jarvis.py"}" --background', str(HERE)
+        icon = str(HERE / "assets" / "jarvis.ico")
+        ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{lnk}');"
+              "$s.TargetPath='{t}';$s.Arguments='{a}';$s.WorkingDirectory='{w}';"
+              "$s.IconLocation='{i}';$s.Save()").format(lnk=str(lnk).replace("'", "''"), t=target.replace("'", "''"),
+                                                         a=args.replace("'", "''"), w=workdir.replace("'", "''"),
+                                                         i=icon.replace("'", "''"))
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, timeout=20,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as e:
+        log.error(f"startup shortcut: {e}")
+
+
 def already_running():
     """Only one JARVIS at a time (two would fight over the microphone)."""
     if OS != "Windows":
@@ -1837,8 +1956,11 @@ def main():
     window = webview.create_window(
         "J.A.R.V.I.S", url=str(HERE / "hud.html"), js_api=Api(),
         width=1280, height=780, min_size=(900, 600), background_color="#01060b",
-        frameless=True, easy_drag=False,
+        frameless=True, easy_drag=False, hidden=BACKGROUND_START,
     )
+    ui.visible = not BACKGROUND_START
+    start_tray()
+    set_start_with_windows(bool(CFG.get("start_with_windows", True)))
     ui.window = window
     webview.start(assistant.start, debug=False)
     os._exit(0)
@@ -1859,8 +1981,9 @@ def selftest():
             lines.append(f"FAIL {name}: {type(e).__name__}: {e}")
     import numpy as np
     step("hud.html", lambda: (HERE / "hud.html").read_text(encoding="utf-8")[:10])
+    step("tray icon image", lambda: (HERE / "assets" / "jarvis.ico").read_bytes()[:4])
     for mod in ("numpy", "sounddevice", "speech_recognition", "edge_tts", "pygame", "webview", "anthropic",
-                "httpx", "psutil", "pyautogui", "pyperclip", "onnxruntime"):
+                "httpx", "psutil", "pyautogui", "pyperclip", "onnxruntime", "pystray", "PIL"):
         step(f"import {mod}", lambda m=mod: __import__(m))
     step("import ddgs", lambda: __import__("ddgs"))
 

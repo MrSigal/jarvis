@@ -35,7 +35,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "קיצור דרך על שולחן העבודה"; GroupDescription: "קיצורי דרך:"
-Name: "startup"; Description: "להפעיל את ג'רוויס אוטומטית כשהמחשב נדלק"; GroupDescription: "הפעלה:"; Flags: unchecked
+Name: "startup"; Description: "להפעיל את ג'רוויס ברקע כשהמחשב נדלק"; GroupDescription: "הפעלה:"
 
 [Files]
 Source: "dist\JARVIS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -43,7 +43,7 @@ Source: "dist\JARVIS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 [Icons]
 Name: "{userprograms}\JARVIS"; Filename: "{app}\JARVIS.exe"; AppUserModelID: "MrSigal.JARVIS"
 Name: "{userdesktop}\JARVIS"; Filename: "{app}\JARVIS.exe"; Tasks: desktopicon; AppUserModelID: "MrSigal.JARVIS"
-Name: "{userstartup}\JARVIS"; Filename: "{app}\JARVIS.exe"; Tasks: startup
+Name: "{userstartup}\JARVIS"; Filename: "{app}\JARVIS.exe"; Parameters: "--background"; Tasks: startup
 
 [InstallDelete]
 ; the old Python version's shortcut pointed at run_jarvis.bat

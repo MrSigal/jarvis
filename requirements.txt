@@ -12,3 +12,5 @@ psutil
 pyautogui
 pyperclip
 ddgs
+pystray
+Pillow

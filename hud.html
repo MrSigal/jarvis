@@ -376,6 +376,13 @@ body.gl .reactor .glow{opacity:.18}
       </div>
     </div>
 
+    <div class="field">
+      <label>4 · רקע</label>
+      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="sBg" style="width:auto;height:auto"> כשסוגרים את החלון, ג'רוויס ממשיך להקשיב ברקע (אייקון ליד השעון)</label>
+      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="sAuto" style="width:auto;height:auto"> להפעיל את ג'רוויס ברקע כשהמחשב נדלק</label>
+      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="sHide" style="width:auto;height:auto"> כשאומרים "היי ג'רוויס" החלון קופץ, ונעלם שוב כשסיימתי</label>
+    </div>
+
     <div class="row">
       <div class="field">
         <label>איך לפנות אליך</label>
@@ -497,6 +504,7 @@ function openSettings(cfg){
   $('#sGroq').value = ''; $('#sGroq').placeholder = cfg.has_groq ? 'שמור ' + cfg.groq_mask + ' (השאר ריק כדי לא לשנות)' : 'gsk_…';
   $('#sStt').value = cfg.stt_engine || 'google';
   showBrain();
+  $('#sBg').checked = cfg.bg !== false; $('#sAuto').checked = cfg.autostart !== false; $('#sHide').checked = cfg.auto_hide !== false;
   $('#sWaPhone').value = cfg.wa_phone || '';
   $('#sWaKey').value = ''; $('#sWaKey').placeholder = cfg.has_wa ? 'שמור ' + cfg.wa_mask : 'המפתח (APIKEY)';
   $('#sWaAway').checked = cfg.wa_away !== false;
@@ -544,6 +552,7 @@ async function save(quiet){
   $('#saveMsg').innerHTML = '<span>מתחבר…</span>';
   const r = await api().save_settings({
     claude_key: $('#sClaude').value, voice: $('#sVoice').value,
+    bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked,
     wa_phone: $('#sWaPhone').value, wa_key: $('#sWaKey').value, wa_away: $('#sWaAway').checked,
     brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
