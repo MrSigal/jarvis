@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "5.2"
+VERSION = "5.3"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -315,6 +315,18 @@ def make_intro_wav(sr=44100):
     with wave.open(buf, "wb") as w:
         w.setnchannels(2); w.setsampwidth(2); w.setframerate(sr); w.writeframes(stereo.tobytes())
     return buf.getvalue()
+
+
+def intro_info():
+    """What startup music the iPhone app should use (it downloads the user's song once and keeps it)."""
+    import hashlib
+    path = (CFG.get("intro_file") or "").strip()
+    on = bool(CFG.get("intro_music", True))
+    if on and CFG.get("intro_mode", "builtin") == "file" and path and os.path.isfile(path):
+        st = os.stat(path)
+        h = hashlib.sha256(f"{path}|{st.st_size}|{st.st_mtime}".encode()).hexdigest()[:16]
+        return {"mode": "file", "hash": h, "seconds": float(CFG.get("intro_seconds", 12) or 12), "size": st.st_size}
+    return {"mode": "builtin" if on else "off", "hash": "", "seconds": 0}
 
 
 def play_intro(pygame):
@@ -1854,6 +1866,19 @@ class PhoneLink:
             except Exception as e:
                 text = f"שגיאה: {e}"
             self.reply({"type": "answer", "id": m.get("id"), "text": text, "quiet": True})
+        elif m.get("type") == "intro_info":
+            self.reply(dict({"type": "intro_info"}, **intro_info()))
+        elif m.get("type") == "intro_get":
+            info = intro_info()
+            if info["mode"] == "file":
+                try:
+                    data = Path(CFG["intro_file"]).read_bytes()
+                    if len(data) > MAX_PHONE_FILE:
+                        raise ValueError("השיר גדול מ־14MB")
+                    self.send_blob(data, "intro" + Path(CFG["intro_file"]).suffix.lower(), "audio/mpeg", "intro",
+                                   {"hash": info["hash"], "seconds": info["seconds"]})
+                except Exception as e:
+                    log.warning(f"intro to phone: {e}")
         elif m.get("type") == "routines":
             self.reply({"type": "routines", "names": list(routines())})
         elif m.get("type") == "routine":

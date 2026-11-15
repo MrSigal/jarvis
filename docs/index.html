@@ -284,6 +284,8 @@ function listen(){
     if (m.type === 'pong'){ lastPong = Date.now(); setStatus(true); return; }
     if (m.type === 'notify'){ if (Date.now() / 1000 - (m.ts || 0) < 600) add('j', m.text); return; }
     if (m.type === 'file' && m.kind === 'voice'){ playVoice(m); return; }
+    if (m.type === 'file' && m.kind === 'intro'){ gotIntro(m); return; }
+    if (m.type === 'intro_info'){ syncIntro(m); return; }
     if (m.type === 'novoice'){ noVoice(m.id); return; }
     if (m.type === 'file'){ setStatus(true); gotFile(m); return; }
     if (m.type === 'routines'){ setStatus(true); showRoutines(m.names || []); return; }
@@ -522,8 +524,38 @@ lockUI();
 
 // ---------- boot: tap once (iPhone allows sound only after a tap), then music + loading; it can't be skipped
 try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch(e){}   // play even on silent mode
-let introBuf = null, actx = null;
-const introData = fetch('intro.mp3').then(r => r.arrayBuffer()).catch(() => null);
+let actx = null;
+// the user's own song (sent once from the PC, kept on the phone); otherwise the built-in JARVIS sound
+const idb = (mode, fn) => new Promise((res, rej) => {
+  const o = indexedDB.open('jarvis', 1);
+  o.onupgradeneeded = () => o.result.createObjectStore('kv');
+  o.onsuccess = () => { const tx = o.result.transaction('kv', mode); const r = fn(tx.objectStore('kv')); tx.oncomplete = () => res(r && r.result); tx.onerror = () => rej(tx.error); };
+  o.onerror = () => rej(o.error);
+});
+const idbGet = k => idb('readonly', st => st.get(k)).catch(() => null);
+const idbSet = (k, v) => idb('readwrite', st => st.put(v, k)).catch(() => null);
+const idbDel = k => idb('readwrite', st => st.delete(k)).catch(() => null);
+const introData = (async () => {
+  if (store.get('jarvis_intro_mode', 'builtin') === 'off') return null;
+  const mine = await idbGet('intro');
+  if (mine && mine.data) return mine.data;
+  return fetch('intro.mp3').then(r => r.arrayBuffer()).catch(() => null);
+})();
+async function syncIntro(m){                       // reply to intro_info from the PC
+  store.set('jarvis_intro_mode', m.mode);
+  const mine = await idbGet('intro');
+  if (m.mode !== 'file') { if (mine) idbDel('intro'); return; }
+  if (!mine || mine.hash !== m.hash) send({type: 'intro_get', ts: Date.now() / 1000}).catch(() => {});
+}
+async function gotIntro(m){
+  try {
+    const r = await fetch(m.url); if (!r.ok) throw new Error(r.status);
+    const raw = new Uint8Array(await r.arrayBuffer());
+    const pt = await crypto.subtle.decrypt({name: 'AES-GCM', iv: raw.slice(0, 12)}, KEY, raw.slice(12));
+    await idbSet('intro', {hash: m.hash, seconds: m.seconds, data: pt});
+    add('sys', '🎵 השיר שבחרת במחשב נשמר. מהפעם הבאה שתפתח את האפליקציה הוא יתנגן בפתיחה.');
+  } catch(e){}
+}
 function playIntro(){
   try {
     const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
@@ -567,7 +599,7 @@ function runBoot(after){
 let started = false;
 function start(){
   if (started || !SECRET) return; started = true;
-  initCrypto().then(() => { listen(); ping(); setInterval(ping, 60000); add('sys', 'שלום! לחץ פעם אחת על המיקרופון ופשוט דבר — אני אקשיב עד שתלחץ שוב.'); });
+  initCrypto().then(() => { listen(); ping(); setInterval(ping, 60000); setTimeout(() => send({type: 'intro_info', ts: Date.now() / 1000}).catch(() => {}), 1500); add('sys', 'שלום! לחץ פעם אחת על המיקרופון ופשוט דבר — אני אקשיב עד שתלחץ שוב.'); });
 }
 function afterBoot(){ if (lockId && SECRET) $('#lock').style.display = 'flex'; else start(); }
 if (SECRET) {
