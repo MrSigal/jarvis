@@ -280,6 +280,7 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
       <div class="row" id="vsRow" style="display:none">
         <select id="sVsVoice"><option value="default">ברירת מחדל</option></select>
         <button class="btn ghost" id="vsConnect" style="flex:0 0 auto">חבר</button>
+        <button class="btn ghost" id="vsInstall" style="flex:0 0 auto" title="מוריד את VoiceStudio מ־GitHub ומפעיל את ההתקנה">התקן מ־GitHub</button>
       </div>
       <div class="row" style="margin-top:8px">
         <div id="vsMsg" style="font-size:14px;align-self:center"></div>
@@ -436,6 +437,14 @@ $('#vsConnect').onclick = async () => {
   $('#sVsVoice').innerHTML = r.voices.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
   if ([...$('#sVsVoice').options].some(o => o.value === cur)) $('#sVsVoice').value = cur;
   $('#vsMsg').innerHTML = `<span class="ok">✔ מחובר. נמצאו ${r.voices.length} קולות.</span>`;
+};
+$('#vsInstall').onclick = async () => {
+  const b = $('#vsInstall'); b.disabled = true;
+  $('#vsMsg').innerHTML = '<span>מוריד מ־GitHub… זה יכול לקחת כמה דקות</span>';
+  const r = await api().vs_install();
+  b.disabled = false;
+  if (!r.ok){ $('#vsMsg').innerHTML = `<span class="bad">${r.error}</span>`; return; }
+  $('#vsMsg').innerHTML = `<span class="ok">✔ ההתקנה נפתחה. אם מופיע מסך כחול: More info ← Run anyway. בסוף פתח את VoiceStudio ולחץ "חבר".</span>`;
 };
 $('#testVoice').onclick = async () => { await save(true); api().test_voice(); };
 async function save(quiet){

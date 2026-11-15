@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "3.1"
+VERSION = "3.2"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -1014,6 +1014,61 @@ def restart_jarvis():
     os._exit(0)
 
 
+# ======================================================================= VOICESTUDIO INSTALLER (from GitHub)
+VS_REPO = "debpalash/VoiceStudio"
+
+
+def pick_windows_asset(assets):
+    """Choose the Windows x64 installer from a GitHub release's assets."""
+    best = None
+    for a in assets:
+        n = a.get("name", "").lower()
+        if not n.endswith((".exe", ".msi")) or n.endswith(".sig"):
+            continue
+        if "arm64" in n or "aarch64" in n:
+            continue
+        if not any(k in n for k in ("win", "x64", "setup", ".msi")):
+            continue
+        score = (n.endswith(".exe"), "x64" in n, "win" in n, "setup" in n or "installer" in n)
+        if best is None or score > best[0]:
+            best = (score, a)
+    return best[1] if best else None
+
+
+def install_voicestudio():
+    """Download the latest VoiceStudio Windows installer from GitHub and start it."""
+    import httpx
+    try:
+        rel = httpx.get(f"https://api.github.com/repos/{VS_REPO}/releases/latest",
+                        headers={"Accept": "application/vnd.github+json"}, timeout=20, follow_redirects=True).json()
+    except Exception as e:
+        return {"ok": False, "error": f"לא הצלחתי להגיע ל־GitHub: {e}"}
+    asset = pick_windows_asset(rel.get("assets", []))
+    if not asset:
+        webbrowser.open(f"https://github.com/{VS_REPO}/releases/latest")
+        return {"ok": False, "error": "לא מצאתי קובץ התקנה ל־Windows, פתחתי לך את דף ההורדות ב־GitHub."}
+    dest = KNOWN_FOLDERS["downloads"] / asset["name"]
+    total = int(asset.get("size") or 0)
+    ui.toast(f"מוריד את VoiceStudio {rel.get('tag_name', '')} מ־GitHub…")
+    try:
+        done, last = 0, 0
+        with httpx.stream("GET", asset["browser_download_url"], timeout=60, follow_redirects=True) as r:
+            r.raise_for_status()
+            with open(dest, "wb") as f:
+                for chunk in r.iter_bytes(1 << 20):
+                    f.write(chunk)
+                    done += len(chunk)
+                    if total and done * 100 // total >= last + 20:
+                        last = done * 100 // total
+                        ui.toast(f"מוריד VoiceStudio… {last}%")
+    except Exception as e:
+        return {"ok": False, "error": f"ההורדה נכשלה: {e}"}
+    ui.action(f"הורד: {asset['name']}")
+    if OS == "Windows":
+        os.startfile(str(dest))
+    return {"ok": True, "file": str(dest), "version": rel.get("tag_name", "")}
+
+
 # ======================================================================= ASSISTANT LOOP
 STOP_PHRASES = ("זהו", "זה הכל", "זה הכול", "תודה זהו", "זהו תודה", "לך לישון", "עזוב", "לא משנה", "תודה ג'רוויס")
 
@@ -1292,6 +1347,9 @@ class Api:
                 if vid and vid != "default":
                     voices.append({"id": str(vid), "name": str(v.get("name") or vid)})
         return {"ok": True, "voices": voices}
+
+    def vs_install(self):
+        return install_voicestudio()
 
     def send_text(self, text):
         if text and text.strip():
