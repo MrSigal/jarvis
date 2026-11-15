@@ -391,6 +391,20 @@ body.gl .reactor .glow{opacity:.18}
     </div>
 
     <div class="field">
+      <label>מייל (לא חובה)</label>
+      <div class="help">ג'רוויס בודק כל כמה דקות מיילים חדשים, ועל מה שחשוב באמת שולח לך וואטסאפ. הוא רק קורא, לא מוחק ולא שולח מיילים. בג'ימייל צריך <b>סיסמת אפליקציה</b>, לא הסיסמה הרגילה: <a data-link="https://myaccount.google.com/apppasswords">myaccount.google.com/apppasswords</a> ← כותבים שם JARVIS ← יצירה ← מעתיקים את 16 האותיות. אם הדף לא נפתח, צריך קודם להפעיל אימות דו־שלבי בחשבון.</div>
+      <div class="row" style="margin-bottom:6px">
+        <input id="sMail" placeholder="you@gmail.com" dir="ltr">
+        <input id="sMailPw" type="password" placeholder="סיסמת אפליקציה" dir="ltr">
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin:6px 0"><input type="checkbox" id="sMailAlerts" style="width:auto;height:auto"> לשלוח לי וואטסאפ כשמגיע מייל חשוב</label>
+      <div class="row">
+        <div id="mailMsg" style="font-size:14px;align-self:center"></div>
+        <button class="btn ghost" id="mailTest" style="flex:0 0 auto">בדוק חיבור</button>
+      </div>
+    </div>
+
+    <div class="field">
       <label>הפסקה באמצע משפט — <span id="pauseVal"></span> שניות</label>
       <div class="help">כמה זמן ג'רוויס מחכה כשאתה עוצר לחשוב, לפני שהוא מבין שסיימת. אם הוא קוטע אותך, הזז ימינה.</div>
       <input id="sPause" type="range" min="0.8" max="3" step="0.1" style="padding:0;height:auto;direction:ltr">
@@ -526,6 +540,9 @@ function openSettings(cfg){
   $('#sGroq').value = ''; $('#sGroq').placeholder = cfg.has_groq ? 'שמור ' + cfg.groq_mask + ' (השאר ריק כדי לא לשנות)' : 'gsk_…';
   $('#sStt').value = cfg.stt_engine || 'google';
   showBrain();
+  $('#sMail').value = cfg.mail_address || '';
+  $('#sMailPw').value = ''; $('#sMailPw').placeholder = cfg.has_mail_pw ? 'שמורה (השאר ריק כדי לא לשנות)' : 'סיסמת אפליקציה';
+  $('#sMailAlerts').checked = cfg.mail_alerts !== false; $('#mailMsg').textContent = '';
   $('#sPause').value = cfg.pause || 1.4; $('#pauseVal').textContent = cfg.pause || 1.4;
   $('#sBg').checked = cfg.bg !== false; $('#sAuto').checked = cfg.autostart !== false; $('#sHide').checked = cfg.auto_hide !== false;
   $('#sWaProv').value = cfg.wa_provider || 'greenapi'; showWa();
@@ -570,6 +587,12 @@ function showWa(){
   $('#cmbRow').style.display = g ? 'none' : 'block';
 }
 $('#sWaProv').onchange = showWa;
+$('#mailTest').onclick = async () => {
+  await save(true);
+  $('#mailMsg').innerHTML = '<span>מתחבר…</span>';
+  const r = await api().mail_test();
+  $('#mailMsg').innerHTML = r.ok ? `<span class="ok">✔ מחובר. ${r.count} מיילים שלא נקראו בתיבה הראשית.</span>` : `<span class="bad">${r.error}</span>`;
+};
 $('#waTest').onclick = async () => {
   await save(true);
   $('#waMsg').innerHTML = '<span>שולח…</span>';
@@ -586,6 +609,7 @@ async function save(quiet){
   $('#saveMsg').innerHTML = '<span>מתחבר…</span>';
   const r = await api().save_settings({
     claude_key: $('#sClaude').value, voice: $('#sVoice').value,
+    mail_address: $('#sMail').value, mail_pw: $('#sMailPw').value, mail_alerts: $('#sMailAlerts').checked,
     pause: $('#sPause').value, bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked,
     wa_provider: $('#sWaProv').value, ga_url: $('#sGaUrl').value, ga_id: $('#sGaId').value, ga_token: $('#sGaTok').value,
     wa_phone: $('#sWaPhone').value, wa_key: $('#sWaKey').value, wa_away: $('#sWaAway').checked,

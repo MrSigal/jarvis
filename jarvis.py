@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "4.3"
+VERSION = "4.4"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -45,6 +45,7 @@ CONFIG_FILE = DATA_DIR / "config.json"
 LOG_FILE = DATA_DIR / "jarvis.log"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 MEMORY_FILE = DATA_DIR / "memory.json"
+MAIL_STATE_FILE = DATA_DIR / "mail_state.json"
 REMINDERS = None
 BACKGROUND_START = "--background" in sys.argv
 OS = platform.system()
@@ -74,6 +75,11 @@ DEFAULT_CONFIG = {
     "greenapi_token": "",
     "whatsapp_phone": "",                   # +972...
     "whatsapp_apikey": "",
+    "mail_address": "",                     # Gmail address (IMAP)
+    "mail_app_password": "",                # Google app password (myaccount.google.com/apppasswords)
+    "mail_imap_host": "",                   # empty = detected from the address
+    "mail_alerts": True,                    # important new emails -> WhatsApp
+    "mail_check_minutes": 3,
     "whatsapp_when_away": True,             # reminders/timers also go to WhatsApp when you're away from the PC
     "away_minutes": 5,
     "run_in_background": True,              # closing the window keeps JARVIS listening (icon near the clock)
@@ -1177,6 +1183,192 @@ class Reminders:
                                  "phone_text": f"תזכורת: {i['text']}"})
 
 
+# ======================================================================= EMAIL (IMAP)
+def _imap_host(addr):
+    if CFG.get("mail_imap_host"):
+        return CFG["mail_imap_host"].strip()
+    dom = addr.split("@")[-1].lower()
+    return {"gmail.com": "imap.gmail.com", "googlemail.com": "imap.gmail.com",
+            "yahoo.com": "imap.mail.yahoo.com", "icloud.com": "imap.mail.me.com", "me.com": "imap.mail.me.com",
+            "outlook.com": "outlook.office365.com", "hotmail.com": "outlook.office365.com",
+            "live.com": "outlook.office365.com"}.get(dom, "imap." + dom)
+
+
+def _decode(h):
+    from email.header import decode_header, make_header
+    try:
+        return str(make_header(decode_header(h or "")))
+    except Exception:
+        return h or ""
+
+
+def _mail_text(msg):
+    import re, html as _html
+    plain, htm = "", ""
+    for part in (msg.walk() if msg.is_multipart() else [msg]):
+        if part.get_content_maintype() == "multipart" or part.get("Content-Disposition", "").startswith("attachment"):
+            continue
+        try:
+            payload = part.get_payload(decode=True) or b""
+            txt = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        except Exception:
+            continue
+        if part.get_content_type() == "text/plain" and not plain:
+            plain = txt
+        elif part.get_content_type() == "text/html" and not htm:
+            htm = txt
+    if not plain and htm:
+        plain = _html.unescape(re.sub(r"(?is)<(script|style).*?</\1>|<[^>]+>", " ", htm))
+    return re.sub(r"\s+", " ", plain).strip()[:1500]
+
+
+class Mail:
+    """Reads the inbox (read-only) and alerts on WhatsApp about important new emails."""
+    def __init__(self):
+        try:
+            self.seen = set(json.loads(MAIL_STATE_FILE.read_text(encoding="utf-8")).get("seen", []))
+            self.seeded = True
+        except Exception:
+            self.seen, self.seeded = set(), False
+        self.lock = threading.Lock()
+
+    def configured(self):
+        return bool(CFG.get("mail_address") and CFG.get("mail_app_password"))
+
+    def _save(self):
+        MAIL_STATE_FILE.write_text(json.dumps({"seen": sorted(self.seen)[-3000:]}), encoding="utf-8")
+
+    def _connect(self):
+        import imaplib
+        addr = CFG["mail_address"].strip()
+        m = imaplib.IMAP4_SSL(_imap_host(addr), timeout=30)
+        m.login(addr, CFG["mail_app_password"].replace(" ", "").strip())
+        m.select("INBOX", readonly=True)
+        return m
+
+    def fetch_unread(self, limit=15, days=2):
+        """Unread inbox mail (Gmail: the Primary tab only). Returns newest first."""
+        import email
+        m = self._connect()
+        try:
+            gmail = "gmail" in _imap_host(CFG["mail_address"])
+            if gmail:
+                typ, data = m.uid("search", None, "X-GM-RAW", f'"in:inbox is:unread category:primary newer_than:{days}d"')
+            else:
+                since = (datetime.now() - __import__("datetime").timedelta(days=days)).strftime("%d-%b-%Y")
+                typ, data = m.uid("search", None, "UNSEEN", "SINCE", since)
+            uids = (data[0] or b"").split()[-limit:]
+            out = []
+            for uid in reversed(uids):
+                parts = "(RFC822.SIZE BODY.PEEK[HEADER])"
+                typ, d = m.uid("fetch", uid, parts)
+                size = 0
+                try:
+                    import re as _re
+                    size = int(_re.search(rb"RFC822\.SIZE (\d+)", d[0][0]).group(1))
+                except Exception:
+                    pass
+                spec = "(BODY.PEEK[])" if size < 1_500_000 else "(BODY.PEEK[HEADER])"
+                typ, d = m.uid("fetch", uid, spec + (" X-GM-LABELS" if gmail else ""))
+                raw = next((x[1] for x in d if isinstance(x, tuple)), b"")
+                meta = b" ".join(x[0] for x in d if isinstance(x, tuple))
+                msg = email.message_from_bytes(raw)
+                out.append({"uid": uid.decode(), "from": _decode(msg.get("From")), "subject": _decode(msg.get("Subject")),
+                            "date": msg.get("Date", ""), "text": _mail_text(msg),
+                            "gmail_important": b"\\Important" in meta})
+            return out
+        finally:
+            try:
+                m.logout()
+            except Exception:
+                pass
+
+    def summary_for_voice(self, limit=8):
+        try:
+            mails = self.fetch_unread(limit=limit)
+        except Exception as e:
+            return {"ok": False, "error": f"לא הצלחתי להתחבר למייל: {e}"}
+        return {"ok": True, "unread": [{"from": m["from"], "subject": m["subject"], "preview": m["text"][:200]} for m in mails]}
+
+    def classify(self, mail):
+        """Ask the brain: is this worth a WhatsApp? Returns (important, hebrew_summary)."""
+        prompt = (
+            "You filter someone's new email and decide if it deserves an immediate WhatsApp alert.\n"
+            "IMPORTANT: personal messages from real people expecting an answer, customers or business contacts, "
+            "bills/payments due or failed, bank or account security alerts, government, appointments or deliveries "
+            "happening soon, anything urgent.\n"
+            "NOT important: newsletters, marketing, promotions, social-media notifications, automatic receipts that "
+            "need no action, spam.\n"
+            'Answer ONLY with JSON: {"important": true/false, "summary": "<one short Hebrew sentence: who and what>"}\n\n'
+            f"From: {mail['from']}\nSubject: {mail['subject']}\nGmail marked important: {mail['gmail_important']}\n"
+            f"Body: {mail['text'][:1200]}")
+        answer = ""
+        try:
+            if CFG.get("groq_api_key"):
+                import httpx
+                for model in ("openai/gpt-oss-120b", "llama-3.3-70b-versatile"):
+                    body = {"model": model, "messages": [{"role": "user", "content": prompt}],
+                            "max_completion_tokens": 300, "temperature": 0,
+                            "response_format": {"type": "json_object"}}
+                    if model.startswith("openai/"):
+                        body["reasoning_effort"] = "low"
+                    r = httpx.post(GroqBrain.URL, headers={"Authorization": f"Bearer {CFG['groq_api_key']}"},
+                                   json=body, timeout=40)
+                    if r.status_code == 200:
+                        answer = r.json()["choices"][0]["message"]["content"]
+                        break
+            elif CFG.get("anthropic_api_key"):
+                import anthropic
+                r = anthropic.Anthropic(api_key=CFG["anthropic_api_key"]).messages.create(
+                    model=CFG["claude_model"], max_tokens=800, messages=[{"role": "user", "content": prompt}])
+                answer = " ".join(b.text for b in r.content if b.type == "text")
+        except Exception as e:
+            log.warning(f"mail classify failed: {e}")
+        try:
+            import re as _re
+            d = json.loads(_re.search(r"\{.*\}", answer, _re.S).group(0))
+            return bool(d.get("important")), str(d.get("summary") or mail["subject"])
+        except Exception:   # no brain available: trust Gmail's own "important" marker
+            return mail["gmail_important"], f"{mail['from']}: {mail['subject']}"
+
+    def check(self):
+        """One polling round. Returns how many alerts were sent."""
+        if not self.configured():
+            return 0
+        with self.lock:
+            mails = self.fetch_unread(limit=20)
+            new = [m for m in mails if m["uid"] not in self.seen]
+            for m in new:
+                self.seen.add(m["uid"])
+            if not self.seeded:              # first run: don't alert about the old backlog
+                self.seeded = True
+                self._save()
+                return 0
+            self._save()
+        sent = 0
+        for m in reversed(new):              # oldest first
+            important, summary = self.classify(m)
+            log.info(f"mail {'IMPORTANT' if important else 'skip'}: {m['from']} | {m['subject']}")
+            if important and CFG.get("mail_alerts", True):
+                sender = m["from"].split("<")[0].strip().strip('"') or m["from"]
+                r = send_whatsapp(f"📧 מייל חשוב מ־{sender}\n{summary}")
+                ui.action("מייל חשוב נשלח לוואטסאפ" if r.get("ok") else "✗ " + r.get("error", ""))
+                sent += 1
+        return sent
+
+    def loop(self):
+        time.sleep(20)
+        while True:
+            try:
+                self.check()
+            except Exception as e:
+                log.warning(f"mail check: {e}")
+            time.sleep(max(1.0, float(CFG.get("mail_check_minutes", 3))) * 60)
+
+
+MAIL = Mail()
+
+
 class Memory:
     """Facts the user asked JARVIS to remember."""
     def __init__(self):
@@ -1253,6 +1445,7 @@ TOOLS = [
 TOOLS += [
     _t("remember", "Save a fact about the user for the future (name, family, preferences, important dates...) when they ask you to remember something or tell you something clearly worth remembering.", {"fact": S}, ["fact"]),
     _t("forget", "Delete remembered facts that contain the given words.", {"contains": S}, ["contains"]),
+    _t("check_email", "Read the user's new unread emails (sender, subject, preview) - for 'do I have new mail?' or 'what did X write?'. Summarize briefly in Hebrew.", {"limit": {"type": "number"}}),
     _t("send_whatsapp", "Send a WhatsApp message to the user's own phone. Use ONLY when the user asks to send/notify something to their phone or WhatsApp.", {"message": S}, ["message"]),
     _t("set_reminder", "Set a reminder the user asked for. Give minutes from now OR a clock time 'HH:MM'. Set whatsapp=true if the user wants it on their phone/WhatsApp.",
        {"text": S, "minutes": {"type": "number"}, "at": S, "whatsapp": {"type": "boolean"}}, ["text"]),
@@ -1272,7 +1465,7 @@ ACTION_LABELS = {
     "get_datetime": "בודק שעה", "system_info": "אבחון מערכת", "power": "חשמל: {action}",
     "run_powershell": "פקודה: {command}", "web_search": "חיפוש ברשת: {query}",
     "read_webpage": "קורא דף: {url}", "get_weather": "מזג אוויר: {city}",
-    "send_whatsapp": "שולח לוואטסאפ", "remember": "זוכר: {fact}", "forget": "שוכח: {contains}", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
+    "send_whatsapp": "שולח לוואטסאפ", "check_email": "בודק מיילים", "remember": "זוכר: {fact}", "forget": "שוכח: {contains}", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
     "cancel_reminders": "מבטל תזכורות",
 }
 
@@ -1342,6 +1535,7 @@ class Brain:
             "power": lambda: power(a["action"]), "run_powershell": lambda: run_powershell(a["command"]),
             "web_search": lambda: web_search(a["query"]), "read_webpage": lambda: read_webpage(a["url"]),
             "send_whatsapp": lambda: send_whatsapp(a["message"]),
+            "check_email": lambda: MAIL.summary_for_voice(int(a.get("limit") or 8)),
             "remember": lambda: MEMORY.remember(a["fact"]), "forget": lambda: MEMORY.forget(a["contains"]),
             "set_reminder": lambda: REMINDERS.add(a["text"], a.get("minutes"), a.get("at"), a.get("whatsapp", False)),
             "list_reminders": lambda: REMINDERS.list(),
@@ -1666,6 +1860,7 @@ class Assistant:
     def start(self):
         global REMINDERS
         REMINDERS = self.reminders = Reminders(self.timers.events)
+        threading.Thread(target=MAIL.loop, daemon=True).start()
         threading.Thread(target=self.run, daemon=True).start()
         threading.Thread(target=self.stats_loop, daemon=True).start()
         threading.Thread(target=self.timer_loop, daemon=True).start()
@@ -1918,6 +2113,8 @@ class Api:
             "pause": CFG.get("pause_seconds", 1.4),
             "bg": bool(CFG.get("run_in_background", True)), "autostart": bool(CFG.get("start_with_windows", True)),
             "auto_hide": bool(CFG.get("auto_hide", True)),
+            "mail_address": CFG.get("mail_address", ""), "has_mail_pw": bool(CFG.get("mail_app_password")),
+            "mail_alerts": bool(CFG.get("mail_alerts", True)),
             "wa_provider": CFG.get("whatsapp_provider", "greenapi"), "ga_url": CFG.get("greenapi_url", ""),
             "ga_id": CFG.get("greenapi_id", ""), "has_ga": bool(CFG.get("greenapi_token")),
             "ga_mask": _mask(CFG.get("greenapi_token", "")),
@@ -1948,6 +2145,12 @@ class Api:
             if ph and not ph.startswith("+"):
                 ph = "+" + ph
             CFG["whatsapp_phone"] = ph
+        if "mail_address" in s:
+            CFG["mail_address"] = s["mail_address"].strip()
+        if s.get("mail_pw", "").strip():
+            CFG["mail_app_password"] = s["mail_pw"].replace(" ", "").strip()
+        if "mail_alerts" in s:
+            CFG["mail_alerts"] = bool(s["mail_alerts"])
         if s.get("wa_provider") in ("greenapi", "callmebot"):
             CFG["whatsapp_provider"] = s["wa_provider"]
         if s.get("ga_id", "").strip():
@@ -1997,6 +2200,20 @@ class Api:
                 result["claude"] = str(e)[:200]
         assistant.build_brain()
         return result
+
+    def mail_test(self):
+        if not MAIL.configured():
+            return {"ok": False, "error": "צריך כתובת מייל וסיסמת אפליקציה."}
+        try:
+            mails = MAIL.fetch_unread(limit=5)
+            if not MAIL.seeded:
+                MAIL.check()        # remember the current backlog so it won't be reported
+            return {"ok": True, "count": len(mails)}
+        except Exception as e:
+            msg = str(e)
+            if "AUTHENTICATIONFAILED" in msg.upper() or "invalid credentials" in msg.lower():
+                msg = "גוגל דחה את הסיסמה. צריך סיסמת אפליקציה (16 אותיות), לא הסיסמה הרגילה."
+            return {"ok": False, "error": msg[:200]}
 
     def wa_test(self):
         return send_whatsapp("בדיקה - ג'רוויס מחובר לוואטסאפ שלך ✔")
