@@ -440,7 +440,12 @@ function showEngine(){
   $('#vsMsg').textContent = '';
 }
 $('#sEngine').onchange = showEngine;
-$('#testVoice').onclick = async () => { await save(true); api().test_voice(); };
+$('#testVoice').onclick = async () => {
+  await save(true);
+  $('#vsMsg').innerHTML = '<span>בודק את הקול…</span>';
+  const r = await api().test_voice();
+  $('#vsMsg').innerHTML = r.ok ? `<span class="ok">${r.message}</span>` : `<span class="bad" style="white-space:pre-line">${r.error}</span>`;
+};
 async function save(quiet){
   $('#saveMsg').innerHTML = '<span>מתחבר…</span>';
   const r = await api().save_settings({

@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "3.3"
+VERSION = "3.4"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -181,14 +181,21 @@ class Speaker:
         for model in models:
             r = httpx.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                            params={"key": key}, json=body, timeout=45)
-            if r.status_code in (404, 400) and ("not found" in r.text.lower() or "not supported" in r.text.lower()):
-                last = f"{model}: {r.status_code}"
-                continue
-            if r.status_code == 429:
-                raise RuntimeError("quota")
+            if r.status_code in (401, 403) or "API_KEY_INVALID" in r.text or "API key not valid" in r.text:
+                raise RuntimeError("המפתח של Gemini לא תקין. תעתיק אותו שוב מ־aistudio.google.com/apikey")
             if r.status_code != 200:
-                raise RuntimeError(f"Gemini {r.status_code}: {r.text[:200]}")
-            part = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
+                try:
+                    msg = r.json().get("error", {}).get("message", r.text)
+                except Exception:
+                    msg = r.text
+                last += f"\n{model}: {r.status_code} {msg[:160]}"
+                log.warning(f"Gemini TTS {model}: {r.status_code} {msg[:300]}")
+                continue
+            try:
+                part = next(p["inlineData"] for p in r.json()["candidates"][0]["content"]["parts"] if "inlineData" in p)
+            except Exception:
+                last += f"\n{model}: no audio in answer"
+                continue
             audio = base64.b64decode(part["data"])
             mime = part.get("mimeType", "")
             if CFG.get("gemini_model") != model:
@@ -201,7 +208,9 @@ class Speaker:
             with wave.open(buf, "wb") as w:
                 w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(audio)
             return buf.getvalue()
-        raise RuntimeError(f"no Gemini TTS model available ({last})")
+        if last.count(": 429 ") == len(models):
+            raise RuntimeError("quota")
+        raise RuntimeError("Gemini לא החזיר קול:" + last)
 
     def synth(self, text):
         if CFG.get("tts_engine") == "gemini" and CFG.get("gemini_api_key"):
@@ -228,7 +237,16 @@ class Speaker:
                 log.error(f"TTS failed: {e}")
                 ui.toast("ההקראה נכשלה (אין אינטרנט?)", "warn")
                 return
-            path = os.path.join(tempfile.gettempdir(), f"jarvis_{int(time.time()*1000)}.mp3")
+            self._play(audio)
+
+    def play_bytes(self, audio, text=""):
+        with self.lock:
+            self._stop = False
+            self._play(audio)
+
+    def _play(self, audio):
+            ext = ".wav" if audio[:4] == b"RIFF" else ".mp3"
+            path = os.path.join(tempfile.gettempdir(), f"jarvis_{int(time.time()*1000)}{ext}")
             with open(path, "wb") as f:
                 f.write(audio)
             ui.state("speaking")
@@ -1304,9 +1322,23 @@ class Api:
             assistant.speaker.stop()
 
     def test_voice(self):
-        if assistant.speaker:
-            threading.Thread(target=assistant.speaker.say,
-                             args=(f"לשירותך, {CFG['user_name']}. איך אני נשמע?",), daemon=True).start()
+        """Speak a test line and report exactly what happened (shown in settings)."""
+        sp = assistant.speaker
+        if not sp:
+            return {"ok": False, "error": "הרמקול עדיין לא מוכן, נסה שוב בעוד כמה שניות."}
+        text = f"לשירותך, {CFG['user_name']}. איך אני נשמע?"
+        engine = CFG.get("tts_engine")
+        if engine == "gemini":
+            if not CFG.get("gemini_api_key"):
+                return {"ok": False, "error": "חסר מפתח של Gemini."}
+            try:
+                audio = sp._gemini(text)
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+            threading.Thread(target=sp.play_bytes, args=(audio, text), daemon=True).start()
+            return {"ok": True, "message": f"✔ Gemini עובד ({CFG.get('gemini_model')})."}
+        threading.Thread(target=sp.say, args=(text,), daemon=True).start()
+        return {"ok": True, "message": "✔ הקול הרגיל עובד."}
 
     def open_link(self, url):
         webbrowser.open(url)
