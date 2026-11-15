@@ -1,0 +1,81 @@
+name: Build JARVIS for Windows
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Download wake-word and voice-detector models (bundled into the app)
+        run: python -c "import openwakeword; openwakeword.utils.download_models()"
+
+      - name: Version
+        id: ver
+        shell: bash
+        run: echo "v=$(cat version.txt | tr -d '\r\n ')" >> "$GITHUB_OUTPUT"
+
+      - name: Build JARVIS.exe
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name JARVIS
+          --icon assets/jarvis.ico
+          --add-data "hud.html;."
+          --add-data "assets/jarvis.ico;assets"
+          --collect-all openwakeword
+          --collect-all webview
+          --collect-all clr_loader
+          --collect-all pythonnet
+          --collect-data speech_recognition
+          --collect-all ddgs
+          --collect-all primp
+          --collect-all edge_tts
+          --collect-submodules pygame
+          --hidden-import pyautogui
+          --hidden-import pyperclip
+          jarvis.py
+
+      - name: Self-test the packaged app
+        shell: pwsh
+        run: |
+          $env:JARVIS_SELFTEST_OUT = "$PWD\selftest.txt"
+          $p = Start-Process -FilePath "dist\JARVIS\JARVIS.exe" -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { throw "self-test failed (exit $($p.ExitCode))" }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=${{ steps.ver.outputs.v }}" installer.iss
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Setup
+          path: |
+            output/JARVIS-Setup.exe
+            selftest.txt
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: J.A.R.V.I.S ${{ steps.ver.outputs.v }}
+          files: output/JARVIS-Setup.exe
+          body: |
+            הורדה: JARVIS-Setup.exe ← פותחים ← אם מופיע מסך כחול: More info ← Run anyway.

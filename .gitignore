@@ -1,4 +1,10 @@
 config.json
 jarvis.log
+reminders.json
+selftest.txt
 backup/
 __pycache__/
+build/
+dist/
+output/
+*.spec

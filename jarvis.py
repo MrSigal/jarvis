@@ -31,12 +31,20 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "3.7"
+VERSION = "4.0"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
-HERE = Path(__file__).resolve().parent
-CONFIG_FILE = HERE / "config.json"
-LOG_FILE = HERE / "jarvis.log"
+FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
+HERE = Path(sys._MEIPASS) if FROZEN else Path(__file__).resolve().parent      # bundled files (hud.html)
+if FROZEN:
+    DATA_DIR = Path(os.environ.get("APPDATA", Path.home())) / "JARVIS"         # settings, log, reminders
+else:
+    DATA_DIR = HERE
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = DATA_DIR / "config.json"
+LOG_FILE = DATA_DIR / "jarvis.log"
+REMINDERS_FILE = DATA_DIR / "reminders.json"
+REMINDERS = None
 OS = platform.system()
 SAMPLE_RATE = 16000
 CHUNK = 1280  # 80 ms, what openWakeWord expects
@@ -58,6 +66,10 @@ DEFAULT_CONFIG = {
     "stt_engine": "google",                 # google | groq (Whisper)
     "claude_model": "claude-haiku-5-5",   # cheapest Claude model
     "voice": "he-IL-AvriNeural",            # free Hebrew male voice (female: he-IL-HilaNeural)
+    "whatsapp_phone": "",                   # +972...  (CallMeBot, free for personal use)
+    "whatsapp_apikey": "",
+    "whatsapp_when_away": True,             # reminders/timers also go to WhatsApp when you're away from the PC
+    "away_minutes": 5,
     "tts_engine": "edge",                   # edge (fast, built-in) | gemini (Google, most natural)
     "gemini_api_key": "",                   # free key from aistudio.google.com/apikey
     "gemini_voice": "Charon",
@@ -914,6 +926,107 @@ def get_datetime():
             "date": f"יום {HE_DAYS[n.weekday()]}, {n.day} ב{HE_MONTHS[n.month - 1]} {n.year}"}
 
 
+# ======================================================================= PHONE (WhatsApp via CallMeBot)
+def send_whatsapp(text):
+    import httpx
+    phone, key = CFG.get("whatsapp_phone", "").strip(), CFG.get("whatsapp_apikey", "").strip()
+    if not phone or not key:
+        return {"ok": False, "error": "וואטסאפ לא מחובר. צריך להגדיר מספר ומפתח בהגדרות."}
+    try:
+        r = httpx.get("https://api.callmebot.com/whatsapp.php",
+                      params={"phone": phone, "text": f"🤖 JARVIS: {text}", "apikey": key}, timeout=30)
+        body = r.text.lower()
+        if r.status_code == 200 and ("queued" in body or "sent" in body) and "error" not in body:
+            return {"ok": True, "sent": True}
+        import re as _re
+        reason = _re.sub(r"<[^>]+>", " ", r.text)
+        return {"ok": False, "error": "CallMeBot: " + " ".join(reason.split())[:160]}
+    except Exception as e:
+        return {"ok": False, "error": f"לא הצלחתי לשלוח לוואטסאפ: {e}"}
+
+
+def idle_seconds():
+    """How long since the last keyboard/mouse input (Windows)."""
+    if OS != "Windows":
+        return 0
+    import ctypes
+
+    class LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+    li = LASTINPUTINFO()
+    li.cbSize = ctypes.sizeof(li)
+    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li)):
+        return 0
+    return (ctypes.windll.kernel32.GetTickCount() - li.dwTime) / 1000.0
+
+
+def user_away():
+    return idle_seconds() > float(CFG.get("away_minutes", 5)) * 60
+
+
+class Reminders:
+    """Reminders the user asked for. Saved to disk so they survive a restart."""
+    def __init__(self, events):
+        self.events = events
+        self.lock = threading.Lock()
+        try:
+            self.items = json.loads(REMINDERS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            self.items = []
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _save(self):
+        try:
+            REMINDERS_FILE.write_text(json.dumps(self.items, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception as e:
+            log.error(f"reminders save: {e}")
+
+    def add(self, text, minutes=None, at=None, whatsapp=False):
+        now = datetime.now()
+        if at:
+            try:
+                hh, mm = [int(x) for x in str(at).strip().split(":")[:2]]
+                due = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                if due <= now:
+                    due = due.replace(day=now.day) + __import__("datetime").timedelta(days=1)
+            except Exception:
+                return {"ok": False, "error": "שעה לא תקינה, צריך HH:MM"}
+        elif minutes is not None:
+            due = now + __import__("datetime").timedelta(minutes=float(minutes))
+        else:
+            return {"ok": False, "error": "צריך זמן (minutes או at)"}
+        item = {"id": int(time.time() * 1000), "text": text, "due": due.isoformat(timespec="seconds"),
+                "whatsapp": bool(whatsapp)}
+        with self.lock:
+            self.items.append(item)
+            self._save()
+        return {"ok": True, "due": due.strftime("%H:%M"), "date": due.strftime("%d/%m"), "whatsapp": bool(whatsapp)}
+
+    def list(self):
+        return {"reminders": [{"text": i["text"], "due": i["due"][11:16], "date": i["due"][8:10] + "/" + i["due"][5:7],
+                               "whatsapp": i["whatsapp"]} for i in sorted(self.items, key=lambda x: x["due"])]}
+
+    def cancel(self, contains=""):
+        with self.lock:
+            before = len(self.items)
+            self.items = [i for i in self.items if contains and contains not in i["text"]]
+            self._save()
+        return {"ok": True, "cancelled": before - len(self.items)}
+
+    def _loop(self):
+        while True:
+            time.sleep(10)
+            now = datetime.now().isoformat(timespec="seconds")
+            with self.lock:
+                due = [i for i in self.items if i["due"] <= now]
+                if due:
+                    self.items = [i for i in self.items if i["due"] > now]
+                    self._save()
+            for i in due:
+                self.events.put({"text": f"{CFG['user_name']}, תזכורת: {i['text']}", "whatsapp": i["whatsapp"],
+                                 "phone_text": f"תזכורת: {i['text']}"})
+
+
 class Timers:
     def __init__(self):
         self.events = queue.Queue()
@@ -922,8 +1035,8 @@ class Timers:
         seconds = float(seconds)
         if not 0 < seconds <= 86400:
             return {"ok": False, "error": "invalid duration"}
-        threading.Timer(seconds, lambda: self.events.put(
-            f"{CFG['user_name']}, הטיימר{(' של ' + label) if label else ''} הסתיים.")).start()
+        msg = f"{CFG['user_name']}, הטיימר{(' של ' + label) if label else ''} הסתיים."
+        threading.Timer(seconds, lambda: self.events.put({"text": msg, "whatsapp": False, "phone_text": msg})).start()
         return {"ok": True, "seconds": seconds}
 
 
@@ -958,6 +1071,11 @@ TOOLS = [
        {"command": S, "confirmed": {"type": "boolean"}}, ["command"]),
 ]
 TOOLS += [
+    _t("send_whatsapp", "Send a WhatsApp message to the user's own phone. Use ONLY when the user asks to send/notify something to their phone or WhatsApp.", {"message": S}, ["message"]),
+    _t("set_reminder", "Set a reminder the user asked for. Give minutes from now OR a clock time 'HH:MM'. Set whatsapp=true if the user wants it on their phone/WhatsApp.",
+       {"text": S, "minutes": {"type": "number"}, "at": S, "whatsapp": {"type": "boolean"}}, ["text"]),
+    _t("list_reminders", "List the user's upcoming reminders."),
+    _t("cancel_reminders", "Cancel reminders whose text contains the given words (empty = cancel all).", {"contains": S}),
     _t("web_search", "Search the internet. Use for news, facts, prices, sports, people, anything current. Returns titles, snippets and URLs.", {"query": S}, ["query"]),
     _t("read_webpage", "Read the text of a web page (e.g. a result from web_search) when snippets aren't enough.", {"url": S}, ["url"]),
     _t("get_weather", "Current weather and 3-day forecast for a city (leave empty for the user's location).", {"city": S}),
@@ -972,6 +1090,8 @@ ACTION_LABELS = {
     "get_datetime": "בודק שעה", "system_info": "אבחון מערכת", "power": "חשמל: {action}",
     "run_powershell": "פקודה: {command}", "web_search": "חיפוש ברשת: {query}",
     "read_webpage": "קורא דף: {url}", "get_weather": "מזג אוויר: {city}",
+    "send_whatsapp": "שולח לוואטסאפ", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
+    "cancel_reminders": "מבטל תזכורות",
 }
 
 
@@ -989,6 +1109,7 @@ Rules:
 - Risky actions (restart, shut down, sleep, sign out, any PowerShell) need confirmation first: say in Hebrew exactly what you'll do and ask "להמשיך?"; only after a clear yes (כן / תמשיך / בטח) call the tool with confirmed=true.
 - You DO have internet access through web_search, read_webpage and get_weather. For anything current (news, weather, prices, sports, people, opening hours...) use them and answer in your own words in Hebrew. Never say you can't access the internet. Default weather location: the user's location (leave city empty) unless they name a place.
 - For the current time or date, call get_datetime.
+- Phone: you can send WhatsApp messages to the user's phone (send_whatsapp) and set reminders (set_reminder, with whatsapp=true when they want it on the phone). Only when they ask.
 - You only understand Hebrew. If the message is not in Hebrew, or is clearly garbled speech-recognition noise / background chatter not addressed to you, reply with exactly [IGNORE] and nothing else."""
 
 
@@ -1028,6 +1149,10 @@ class Brain:
             "get_datetime": get_datetime, "system_info": system_info,
             "power": lambda: power(a["action"]), "run_powershell": lambda: run_powershell(a["command"]),
             "web_search": lambda: web_search(a["query"]), "read_webpage": lambda: read_webpage(a["url"]),
+            "send_whatsapp": lambda: send_whatsapp(a["message"]),
+            "set_reminder": lambda: REMINDERS.add(a["text"], a.get("minutes"), a.get("at"), a.get("whatsapp", False)),
+            "list_reminders": lambda: REMINDERS.list(),
+            "cancel_reminders": lambda: REMINDERS.cancel(a.get("contains", "")),
             "get_weather": lambda: get_weather(a.get("city", "")),
         }.get(name)
         if not f:
@@ -1201,9 +1326,34 @@ def _vtuple(v):
         return (0,)
 
 
+def latest_release():
+    """The newest installer published on GitHub Releases, or None."""
+    import httpx
+    r = httpx.get(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+                  headers={"Accept": "application/vnd.github+json"}, timeout=12, follow_redirects=True)
+    if r.status_code != 200:
+        return None
+    d = r.json()
+    asset = next((a for a in d.get("assets", []) if a.get("name", "").lower() == "jarvis-setup.exe"), None)
+    if not asset:
+        return None
+    return {"version": d.get("tag_name", "").lstrip("vV"), "url": asset["browser_download_url"],
+            "size": asset.get("size", 0)}
+
+
 def check_update():
     try:
         import httpx
+        if FROZEN:
+            rel = latest_release()
+            if not rel:
+                return {"ok": True, "current": VERSION, "latest": VERSION, "available": False}
+            return {"ok": True, "current": VERSION, "latest": rel["version"],
+                    "available": _vtuple(rel["version"]) > _vtuple(VERSION), "installer": rel}
+        # running from the Python files: an installer on GitHub means "upgrade to the real program"
+        rel = latest_release() if OS == "Windows" else None
+        if rel:
+            return {"ok": True, "current": VERSION, "latest": rel["version"], "available": True, "installer": rel}
         r = httpx.get(_raw("version.txt") + f"?t={int(time.time())}", timeout=10, follow_redirects=True)
         if r.status_code != 200:
             return {"ok": False, "error": f"update server said {r.status_code}"}
@@ -1213,14 +1363,41 @@ def check_update():
         return {"ok": False, "error": str(e)}
 
 
+def run_installer(rel):
+    """Download JARVIS-Setup.exe and start it silently; it closes us, installs, and starts JARVIS again."""
+    import httpx
+    dest = Path(tempfile.gettempdir()) / f"JARVIS-Setup-{rel['version']}.exe"
+    ui.toast(f"מוריד את ג'רוויס {rel['version']}…")
+    with httpx.stream("GET", rel["url"], timeout=120, follow_redirects=True) as r:
+        r.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in r.iter_bytes(1 << 20):
+                f.write(chunk)
+    if not FROZEN:   # moving from the Python files: carry the settings over to the program
+        target = Path(os.environ.get("APPDATA", Path.home())) / "JARVIS"
+        target.mkdir(parents=True, exist_ok=True)
+        for name in ("config.json", "reminders.json"):
+            src = DATA_DIR / name
+            if src.exists() and not (target / name).exists():
+                shutil.copy2(src, target / name)
+    subprocess.Popen([str(dest), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
+                     creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+    return {"ok": True, "updated": True, "version": rel["version"], "installer": True}
+
+
 def do_update():
-    """Download the new files, install new packages if needed, and restart."""
+    """Install the newest version: through the installer when there is one, otherwise by replacing files."""
     import httpx
     info = check_update()
     if not info.get("ok"):
         return info
     if not info["available"]:
         return {"ok": True, "updated": False, "message": f"Already on the latest version ({VERSION})."}
+    if info.get("installer"):
+        try:
+            return run_installer(info["installer"])
+        except Exception as e:
+            return {"ok": False, "error": f"download failed: {e}"}
     try:
         manifest = httpx.get(_raw("files.json") + f"?t={int(time.time())}", timeout=15, follow_redirects=True).json()
         files = {}
@@ -1249,8 +1426,13 @@ def do_update():
     return {"ok": True, "updated": True, "version": info["latest"]}
 
 
-def restart_jarvis():
-    subprocess.Popen([sys.executable, str(HERE / "jarvis.py")], cwd=str(HERE))
+def restart_jarvis(installer=False):
+    if installer:            # the installer closes and restarts JARVIS by itself
+        os._exit(0)
+    if FROZEN:
+        subprocess.Popen([sys.executable])
+    else:
+        subprocess.Popen([sys.executable, str(HERE / "jarvis.py")], cwd=str(HERE))
     os._exit(0)
 
 
@@ -1261,6 +1443,7 @@ STOP_PHRASES = ("זהו", "זה הכל", "זה הכול", "תודה זהו", "ז
 class Assistant:
     def __init__(self):
         self.timers = Timers()
+        self.reminders = None
         self.speaker = None
         self.ears = None
         self.brain = None
@@ -1284,6 +1467,8 @@ class Assistant:
         ui.status({"brain": "basic"})
 
     def start(self):
+        global REMINDERS
+        REMINDERS = self.reminders = Reminders(self.timers.events)
         threading.Thread(target=self.run, daemon=True).start()
         threading.Thread(target=self.stats_loop, daemon=True).start()
         threading.Thread(target=self.timer_loop, daemon=True).start()
@@ -1304,9 +1489,15 @@ class Assistant:
 
     def timer_loop(self):
         while True:
-            msg = self.timers.events.get()
+            ev = self.timers.events.get()
+            if isinstance(ev, str):
+                ev = {"text": ev, "whatsapp": False, "phone_text": ev}
+            to_phone = ev.get("whatsapp") or (CFG.get("whatsapp_when_away") and CFG.get("whatsapp_apikey") and user_away())
+            if to_phone:
+                r = send_whatsapp(ev.get("phone_text") or ev["text"])
+                ui.action("נשלח לוואטסאפ" if r.get("ok") else "✗ " + r.get("error", ""))
             if self.speaker:
-                self.speaker.say(msg)
+                self.speaker.say(ev["text"])
 
     def quick_command(self, text):
         """Open/close commands are done directly - instant, free and reliable."""
@@ -1322,8 +1513,8 @@ class Assistant:
                 return f"לא הצלחתי להגיע לשרת העדכונים, {u}."
             if not r.get("updated"):
                 return f"אני כבר בגרסה העדכנית ביותר, {u}."
-            self.speaker.say(f"עדכון {r['version']} הותקן. מפעיל את עצמי מחדש.")
-            restart_jarvis()
+            self.speaker.say(f"מתקין את גרסה {r['version']}. אחזור בעוד רגע.")
+            restart_jarvis(r.get("installer", False))
 
         def he_name(raw):
             n = raw.strip()
@@ -1489,6 +1680,8 @@ class Api:
             "has_claude": bool(CFG["anthropic_api_key"]), "claude_mask": _mask(CFG["anthropic_api_key"]),
             "brain_engine": CFG.get("brain_engine", "claude"), "stt_engine": CFG.get("stt_engine", "google"),
             "has_groq": bool(CFG.get("groq_api_key")), "groq_mask": _mask(CFG.get("groq_api_key", "")),
+            "wa_phone": CFG.get("whatsapp_phone", ""), "has_wa": bool(CFG.get("whatsapp_apikey")),
+            "wa_mask": _mask(CFG.get("whatsapp_apikey", "")), "wa_away": bool(CFG.get("whatsapp_when_away", True)),
             "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
             "has_gemini": bool(CFG.get("gemini_api_key")), "gemini_mask": _mask(CFG.get("gemini_api_key", "")),
             "gemini_voice": CFG.get("gemini_voice", "Charon"),
@@ -1500,6 +1693,17 @@ class Api:
             CFG["anthropic_api_key"] = s["claude_key"].strip()
         if s.get("voice"):
             CFG["voice"] = s["voice"]
+        if "wa_phone" in s:
+            ph = "".join(ch for ch in str(s["wa_phone"]) if ch.isdigit() or ch == "+")
+            if ph.startswith("0"):
+                ph = "+972" + ph[1:]                     # Israeli local number -> international
+            if ph and not ph.startswith("+"):
+                ph = "+" + ph
+            CFG["whatsapp_phone"] = ph
+        if s.get("wa_key", "").strip():
+            CFG["whatsapp_apikey"] = s["wa_key"].strip()
+        if "wa_away" in s:
+            CFG["whatsapp_when_away"] = bool(s["wa_away"])
         if s.get("groq_key", "").strip():
             CFG["groq_api_key"] = s["groq_key"].strip()
         if s.get("brain_engine") in ("claude", "groq"):
@@ -1536,6 +1740,9 @@ class Api:
                 result["claude"] = str(e)[:200]
         assistant.build_brain()
         return result
+
+    def wa_test(self):
+        return send_whatsapp("בדיקה - ג'רוויס מחובר לוואטסאפ שלך ✔")
 
     def send_text(self, text):
         if text and text.strip():
@@ -1575,26 +1782,111 @@ class Api:
     def version(self):
         return VERSION
 
+    def win(self, action):
+        w = ui.window
+        try:
+            if action == "min":
+                w.minimize()
+            elif action == "max":
+                if getattr(self, "_maxed", False):
+                    w.restore()
+                else:
+                    w.maximize()
+                self._maxed = not getattr(self, "_maxed", False)
+            elif action == "close":
+                w.destroy()
+        except Exception as e:
+            log.error(f"window action {action}: {e}")
+
     def update_now(self):
         r = do_update()
         if r.get("updated"):
-            threading.Thread(target=lambda: (time.sleep(1.5), restart_jarvis()), daemon=True).start()
+            threading.Thread(target=lambda: (time.sleep(1.5), restart_jarvis(r.get("installer", False))),
+                             daemon=True).start()
         return r
 
 
 # ======================================================================= MAIN
+def already_running():
+    """Only one JARVIS at a time (two would fight over the microphone)."""
+    if OS != "Windows":
+        return False
+    import ctypes
+    ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\MrSigal.JARVIS")
+    return ctypes.windll.kernel32.GetLastError() == 183      # ERROR_ALREADY_EXISTS
+
+
 def main():
     import webview
+    if already_running():
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.FindWindowW(None, "J.A.R.V.I.S")
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 9)
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+        return
+    if OS == "Windows":
+        try:   # own taskbar group/icon instead of Python's
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MrSigal.JARVIS")
+        except Exception:
+            pass
     window = webview.create_window(
         "J.A.R.V.I.S", url=str(HERE / "hud.html"), js_api=Api(),
         width=1280, height=780, min_size=(900, 600), background_color="#01060b",
+        frameless=True, easy_drag=False,
     )
     ui.window = window
     webview.start(assistant.start, debug=False)
     os._exit(0)
 
 
+def selftest():
+    """Used by the build server: can the packaged program load everything it needs?"""
+    out = Path(os.environ.get("JARVIS_SELFTEST_OUT", str(DATA_DIR / "selftest.txt")))
+    lines, ok = [], True
+
+    def step(name, fn):
+        nonlocal ok
+        try:
+            fn()
+            lines.append(f"OK   {name}")
+        except Exception as e:
+            ok = False
+            lines.append(f"FAIL {name}: {type(e).__name__}: {e}")
+    import numpy as np
+    step("hud.html", lambda: (HERE / "hud.html").read_text(encoding="utf-8")[:10])
+    for mod in ("numpy", "sounddevice", "speech_recognition", "edge_tts", "pygame", "webview", "anthropic",
+                "httpx", "psutil", "pyautogui", "pyperclip", "onnxruntime"):
+        step(f"import {mod}", lambda m=mod: __import__(m))
+    step("import ddgs", lambda: __import__("ddgs"))
+
+    def wake():
+        from openwakeword.model import Model
+        Model(wakeword_models=["hey_jarvis"], inference_framework="onnx").predict(np.zeros(CHUNK, dtype=np.int16))
+    step("wake word model", wake)
+
+    def vad():
+        from openwakeword.vad import VAD
+        VAD().predict(np.zeros(CHUNK, dtype=np.int16), frame_size=640)
+    step("voice detector", vad)
+
+    def flac():
+        import speech_recognition as sr
+        sr.AudioData(np.zeros(16000, dtype=np.int16).tobytes(), SAMPLE_RATE, 2).get_flac_data()
+    step("flac encoder (Google speech)", flac)
+    step("config dir writable", lambda: (DATA_DIR / "selftest.tmp").write_text("x") or (DATA_DIR / "selftest.tmp").unlink())
+    lines.append(f"VERSION {VERSION}  FROZEN {FROZEN}  RESULT {'PASS' if ok else 'FAIL'}")
+    out.write_text("\n".join(lines), encoding="utf-8")
+    return 0 if ok else 1
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     try:
         main()
     except Exception:

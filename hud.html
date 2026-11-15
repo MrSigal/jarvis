@@ -45,7 +45,7 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;
 .iconbtn:hover{background:var(--cfaint);box-shadow:0 0 12px var(--cdim)}
 
 /* ---------- main */
-.main{display:grid;grid-template-columns:270px 1fr 360px;min-height:0}
+.main{display:grid;grid-template-columns:1fr;min-height:0}
 .panel{padding:16px;display:flex;flex-direction:column;gap:14px;min-height:0}
 .left{border-right:1px solid var(--cdim)}
 .right{border-left:1px solid var(--cdim)}
@@ -67,7 +67,7 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;
 
 /* ---------- reactor */
 .center{display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative;min-height:0}
-.reactor{position:relative;width:min(46vh,430px);height:min(46vh,430px);cursor:pointer}
+.reactor{position:relative;width:min(50vh,500px);height:min(50vh,500px);cursor:pointer}
 .reactor svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
 .spin{transform-origin:50% 50%;animation:rot 30s linear infinite}
 .spin.r2{animation-duration:18s;animation-direction:reverse}
@@ -168,6 +168,20 @@ body.gl .reactor .glow{opacity:.18}
 @keyframes ringIn{from{opacity:0;transform:scale(1.9) rotate(-40deg)}to{opacity:1;transform:scale(var(--s)) rotate(0)}}
 @keyframes nameIn{from{opacity:0;letter-spacing:1.4em}to{opacity:1;letter-spacing:.5em}}
 #boot .skip{position:absolute;bottom:22px;color:var(--muted);font-size:13px}
+/* ---------- minimal layout */
+.stats{display:flex;gap:16px;font-size:12.5px;color:var(--muted);letter-spacing:.04em}
+.stats b{color:var(--c2);font-weight:500;font-family:Orbitron,sans-serif;font-size:12px;direction:ltr;unicode-bidi:isolate}
+.winbtns{display:flex;gap:2px;margin-inline-start:6px}
+.winbtns button{width:34px;height:30px;background:none;border:0;color:var(--muted);font-size:15px;cursor:pointer}
+.winbtns button:hover{background:var(--cfaint);color:var(--c2)}
+.winbtns button.x:hover{background:#c42b3a;color:#fff}
+.pywebview-drag-region button,.pywebview-drag-region .stats{-webkit-app-region:no-drag}
+.subs{margin-top:18px;min-height:96px;width:min(760px,86vw);text-align:center;display:flex;flex-direction:column;gap:6px;align-items:center}
+#subUser{color:var(--muted);font-size:15px;min-height:20px;transition:opacity .6s}
+#subJarvis{color:var(--text);font-size:21px;line-height:1.45;min-height:30px;text-shadow:0 0 18px rgba(63,217,255,.25);transition:opacity .6s}
+#subAction{color:var(--c);font-size:12.5px;font-family:Consolas,monospace;opacity:.85;min-height:16px;transition:opacity .6s}
+.subs .fade{opacity:0}
+.corner{display:none}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:var(--cdim)}
 </style>
 </head>
@@ -190,44 +204,30 @@ body.gl .reactor .glow{opacity:.18}
 </div>
 <div class="app">
   <!-- TOP -->
-  <header class="top">
+  <header class="top pywebview-drag-region">
     <div class="logo">J.A.R.V.I.S<small>PERSONAL AI SYSTEM</small></div>
     <div class="indicators">
       <div class="ind" id="indBrain"><i></i>מוח</div>
       <div class="ind" id="indMic"><i></i>מיקרופון</div>
       <div class="ind" id="indVoice"><i></i>קול</div>
     </div>
+    <div class="stats"><span>מעבד <b id="vCpu">--</b></span><span>זיכרון <b id="vRam">--</b></span><span>סוללה <b id="vBat">--</b></span></div>
     <div class="topright">
       <button class="btn ghost" id="updateBtn" title="בדיקת עדכונים" style="height:36px">עדכון <span id="ver" style="opacity:.6"></span></button>
       <div><div id="clock">--:--:--</div><div id="date"></div></div>
       <button class="iconbtn" id="openSettings" title="הגדרות">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
       </button>
+      <div class="winbtns">
+        <button id="wMin" title="מזער">&#8211;</button>
+        <button id="wMax" title="הגדל">&#9633;</button>
+        <button id="wClose" title="סגור" class="x">&#10005;</button>
+      </div>
     </div>
   </header>
 
   <!-- MAIN -->
   <section class="main">
-    <aside class="panel left">
-      <div class="ptitle">מצב המחשב</div>
-      <div class="box gauges">
-        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gCpu" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vCpu">--</div><div class="lbl">מעבד</div></div>
-        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gRam" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vRam">--</div><div class="lbl">זיכרון</div></div>
-        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gBat" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vBat">--</div><div class="lbl">סוללה</div></div>
-      </div>
-      <div class="ptitle">יומן פעולות</div>
-      <div class="box" style="flex:1;display:flex;min-height:0"><div id="actions"></div></div>
-      <div class="ptitle">נסה לומר</div>
-      <div class="box tips">
-        <b>"היי ג'רוויס"</b> … ואז:<br>
-        "תפתח ספוטיפיי" · "תסגור את כרום"<br>
-        "תנגן ביוטיוב שיר של עומר אדם"<br>
-        "מה מזג האוויר מחר?"<br>
-        "שים טיימר לעשר דקות"<br>
-        "תוריד את הווליום ל־30"
-      </div>
-    </aside>
-
     <div class="center">
       <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
       <div class="reactor" id="reactor" title="לחץ כדי לדבר">
@@ -269,12 +269,13 @@ body.gl .reactor .glow{opacity:.18}
       </div>
       <div id="stateLabel">מאתחל</div>
       <div id="hint">תגיד "היי ג'רוויס" או לחץ על העיגול</div>
+      <div class="subs">
+        <div id="subUser"></div>
+        <div id="subJarvis"></div>
+        <div id="subAction"></div>
+      </div>
     </div>
 
-    <aside class="panel right">
-      <div class="ptitle">שיחה</div>
-      <div id="chat"></div>
-    </aside>
   </section>
 
   <!-- BOTTOM -->
@@ -359,6 +360,22 @@ body.gl .reactor .glow{opacity:.18}
       </div>
     </div>
 
+    <div class="field">
+      <label>3 · וואטסאפ (לא חובה)</label>
+      <div class="help">ככה ג'רוויס יכול לשלוח לך הודעות ותזכורות לטלפון. פעם אחת: שומרים באנשי הקשר את המספר של CallMeBot (המספר המעודכן מופיע ב־<a data-link="https://www.callmebot.com/blog/free-api-whatsapp-messages/">האתר שלהם</a>), שולחים לו בוואטסאפ <b dir="ltr">I allow callmebot to send me messages</b>, ומדביקים כאן את המפתח שהוא שולח בחזרה.</div>
+      <div class="row" style="margin-bottom:8px">
+        <input id="sWaPhone" placeholder="המספר שלך, לדוגמה 0501234567" dir="ltr">
+        <input id="sWaKey" type="password" placeholder="המפתח (APIKEY)" dir="ltr">
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer">
+        <input type="checkbox" id="sWaAway" style="width:auto;height:auto"> כשאני לא ליד המחשב, תשלח תזכורות וטיימרים גם לוואטסאפ
+      </label>
+      <div class="row" style="margin-top:8px">
+        <div id="waMsg" style="font-size:14px;align-self:center"></div>
+        <button class="btn ghost" id="waTest" style="flex:0 0 auto">שלח בדיקה</button>
+      </div>
+    </div>
+
     <div class="row">
       <div class="field">
         <label>איך לפנות אליך</label>
@@ -437,18 +454,15 @@ window.hud = {
     $('#hint').textContent = HINTS[s] || '';
   },
   addMessage(role, text){
-    const d = document.createElement('div');
-    d.className = 'msg ' + role;
-    d.innerHTML = `<div class="who">${role === 'user' ? 'אתה' : 'ג\'רוויס'}</div>`;
-    d.appendChild(document.createTextNode(text));
-    const c = $('#chat'); c.appendChild(d); c.scrollTop = c.scrollHeight;
+    const el = role === 'user' ? $('#subUser') : $('#subJarvis');
+    el.textContent = role === 'user' ? '"' + text + '"' : text;
+    el.classList.remove('fade');
+    if (role === 'user') { $('#subJarvis').textContent = ''; $('#subAction').textContent = ''; }
+    clearTimeout(this._subT);
+    this._subT = setTimeout(() => ['#subUser', '#subJarvis', '#subAction'].forEach(s => $(s).classList.add('fade')), 14000);
   },
   addAction(text){
-    const d = document.createElement('div');
-    d.innerHTML = `<span>${new Date().toLocaleTimeString('en-GB')}</span>`;
-    d.appendChild(document.createTextNode('▸ ' + text));
-    const a = $('#actions'); a.appendChild(d); a.scrollTop = a.scrollHeight;
-    while (a.children.length > 60) a.firstChild.remove();
+    const el = $('#subAction'); el.textContent = '▸ ' + text; el.classList.remove('fade');
   },
   toast(text, kind='info'){
     const t = document.createElement('div'); t.className = 'toast ' + kind; t.textContent = text;
@@ -460,9 +474,9 @@ window.hud = {
     const set = (id, cls) => { const e = $(id); e.classList.remove('on','warn','off'); e.classList.add(cls); };
     if (s.brain) set('#indBrain', s.brain === 'online' ? 'on' : 'warn');
     if (s.mic) set('#indMic', s.mic === 'online' ? 'on' : 'off');
-    const g = (id, vid, v) => { if (v == null) return; $(id).style.strokeDashoffset = 188.5 * (1 - v/100); $(vid).textContent = Math.round(v) + '%'; };
-    g('#gCpu', '#vCpu', s.cpu); g('#gRam', '#vRam', s.ram);
-    if ('battery' in s){ if (s.battery == null){ $('#vBat').textContent = 'AC'; $('#gBat').style.strokeDashoffset = 0; } else g('#gBat', '#vBat', s.battery); }
+    const t = (id, v) => { if (v != null) $(id).textContent = Math.round(v) + '%'; };
+    t('#vCpu', s.cpu); t('#vRam', s.ram);
+    if ('battery' in s) $('#vBat').textContent = s.battery == null ? 'חשמל' : Math.round(s.battery) + '%';
   }
 };
 
@@ -483,6 +497,10 @@ function openSettings(cfg){
   $('#sGroq').value = ''; $('#sGroq').placeholder = cfg.has_groq ? 'שמור ' + cfg.groq_mask + ' (השאר ריק כדי לא לשנות)' : 'gsk_…';
   $('#sStt').value = cfg.stt_engine || 'google';
   showBrain();
+  $('#sWaPhone').value = cfg.wa_phone || '';
+  $('#sWaKey').value = ''; $('#sWaKey').placeholder = cfg.has_wa ? 'שמור ' + cfg.wa_mask : 'המפתח (APIKEY)';
+  $('#sWaAway').checked = cfg.wa_away !== false;
+  $('#waMsg').textContent = '';
   $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'שמור ' + cfg.claude_mask + ' (השאר ריק כדי לא לשנות)' : 'sk-ant-…';
   if (cfg.voice) $('#sVoice').value = cfg.voice;
   $('#sEngine').value = cfg.tts_engine || 'edge';
@@ -510,6 +528,12 @@ function showEngine(){
   $('#vsMsg').textContent = '';
 }
 $('#sEngine').onchange = showEngine;
+$('#waTest').onclick = async () => {
+  await save(true);
+  $('#waMsg').innerHTML = '<span>שולח…</span>';
+  const r = await api().wa_test();
+  $('#waMsg').innerHTML = r.ok ? '<span class="ok">✔ נשלח! בדוק את הוואטסאפ.</span>' : `<span class="bad">${r.error}</span>`;
+};
 $('#testVoice').onclick = async () => {
   await save(true);
   $('#vsMsg').innerHTML = '<span>בודק את הקול…</span>';
@@ -520,6 +544,7 @@ async function save(quiet){
   $('#saveMsg').innerHTML = '<span>מתחבר…</span>';
   const r = await api().save_settings({
     claude_key: $('#sClaude').value, voice: $('#sVoice').value,
+    wa_phone: $('#sWaPhone').value, wa_key: $('#sWaKey').value, wa_away: $('#sWaAway').checked,
     brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
     user_name: $('#sName').value, wake_threshold: $('#sSens').value
@@ -673,6 +698,10 @@ $('#updateBtn').onclick = async () => {
   })(0);
 })();
 
+/* ---------- window buttons (frameless window) */
+$('#wMin').onclick = () => api() && api().win('min');
+$('#wMax').onclick = () => api() && api().win('max');
+$('#wClose').onclick = () => api() && api().win('close');
 /* ---------- boot */
 window.addEventListener('pywebviewready', async () => {
   const cfg = await api().ui_ready();
