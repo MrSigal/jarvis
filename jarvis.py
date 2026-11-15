@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "2.3"
+VERSION = "2.4"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -62,6 +62,7 @@ DEFAULT_CONFIG = {
     "user_name": "sir",
     "wake_threshold": 0.5,
     "follow_up_seconds": 6,
+    "min_confidence": 0.6,                  # speech below this confidence is ignored (non-English, noise)
 }
 
 
@@ -297,6 +298,7 @@ class Ears:
         return self.transcribe(pcm)
 
     def transcribe(self, pcm):
+        """Returns English text, or None if the speech was not clearly English."""
         if CFG["speech_recognition"] == "elevenlabs" and CFG["elevenlabs_api_key"]:
             try:
                 import httpx
@@ -306,23 +308,52 @@ class Ears:
                 r = httpx.post(
                     "https://api.elevenlabs.io/v1/speech-to-text",
                     headers={"xi-api-key": CFG["elevenlabs_api_key"]},
-                    data={"model_id": "scribe_v1", "language_code": "en"},
+                    data={"model_id": "scribe_v1"},          # no forced language -> it tells us what it heard
                     files={"file": ("speech.wav", buf.getvalue(), "audio/wav")},
                     timeout=30,
                 )
                 if r.status_code == 200:
-                    return (r.json().get("text") or "").strip() or None
+                    d = r.json()
+                    lang = (d.get("language_code") or "").lower()
+                    prob = float(d.get("language_probability") or 0)
+                    text = (d.get("text") or "").strip()
+                    if not lang.startswith("en") or prob < 0.5:
+                        log.info(f"ignored non-English speech ({lang} {prob:.2f}): {text}")
+                        return None
+                    return english_only(text)
                 log.error(f"Scribe {r.status_code}: {r.text[:200]}")
             except Exception as e:
                 log.error(f"Scribe failed: {e}")
         try:
-            return self.rec.recognize_google(self.sr.AudioData(pcm, SAMPLE_RATE, 2), language="en-US")
+            res = self.rec.recognize_google(self.sr.AudioData(pcm, SAMPLE_RATE, 2), language="en-US", show_all=True)
         except self.sr.UnknownValueError:
             return None
         except Exception as e:
             log.error(f"Speech recognition failed: {e}")
             ui.toast("Speech recognition needs internet.", "warn")
             return None
+        if not res or not isinstance(res, dict) or not res.get("alternative"):
+            return None
+        best = res["alternative"][0]
+        text = (best.get("transcript") or "").strip()
+        conf = best.get("confidence")
+        if conf is not None and conf < float(CFG["min_confidence"]):
+            log.info(f"ignored low-confidence speech ({conf:.2f}): {text}")
+            return None
+        return english_only(text)
+
+
+def english_only(text):
+    """None if the text contains non-Latin letters (Hebrew, Arabic, Cyrillic...) or no real words."""
+    import re
+    if not text:
+        return None
+    if re.search(r"[^\x00-\x7F\u2018\u2019\u201c\u201d\u2013\u2014\u00e9\u00e8\u00e1\u00ed\u00f3\u00fa\u00f1]", text):
+        log.info(f"ignored non-English text: {text}")
+        return None
+    if not re.search(r"[A-Za-z]{2,}", text):
+        return None
+    return text
 
 
 # ======================================================================= COMPUTER CONTROL
@@ -754,7 +785,8 @@ Rules:
 - Closing: use close_app (check list_open_apps if you're not sure of the name). Never close Jarvis itself.
 - Risky actions (restart, shut down, sleep, sign out, any PowerShell) need a spoken confirmation first: say exactly what you'll do and ask "Shall I proceed?"; only after a clear yes call the tool with confirmed=true.
 - You DO have internet access through web_search, read_webpage and get_weather. For anything current (news, weather, prices, sports, people, opening hours...) use them and answer in your own words. Never say you can't access the internet.
-- For the current time or date, call get_datetime."""
+- For the current time or date, call get_datetime.
+- You only understand English. If the message is not in English, or is clearly garbled speech-recognition noise / background chatter not addressed to you, reply with exactly [IGNORE] and nothing else."""
 
 
 DANGEROUS = {"run_powershell"}
@@ -1036,6 +1068,9 @@ class Assistant:
         return None
 
     def think(self, text):
+        if not english_only(text):
+            ui.toast("English only, sir.", "warn")
+            return False
         ui.say("user", text)
         ui.state("thinking")
         answer = None
@@ -1059,7 +1094,12 @@ class Assistant:
                     answer = "I can't reach my servers at the moment. Please check the internet connection."
                 else:
                     answer = "Something went wrong on my end. The error is on the screen, sir."
+        if not answer or "[IGNORE]" in answer:
+            log.info(f"ignored: {text}")
+            ui.state("idle")
+            return False
         self.speaker.say(answer)
+        return True
 
     def wait_trigger(self):
         """Blocks until: wake word, mic button, or typed text."""
@@ -1111,15 +1151,13 @@ class Assistant:
                 self.think(payload)
                 continue
             self.ears.beep()
-            q = self.ears.listen()
-            if not q:
-                self.speaker.say(f"Yes, {CFG['user_name']}?")
-                q = self.ears.listen()
+            q = self.ears.listen()      # nothing / non-English -> silently back to standby
             while q:
                 if any(p in q.lower() for p in STOP_PHRASES) and len(q.split()) <= 5:
                     self.speaker.say(f"Very good, {CFG['user_name']}.")
                     break
-                self.think(q)
+                if not self.think(q):
+                    break
                 if not self.text_q.empty():
                     break
                 self.ears.beep(1318, 0.06)
