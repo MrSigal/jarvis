@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "4.8"
+VERSION = "4.9"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -1658,6 +1658,7 @@ class PhoneLink:
     derived from the pairing secret, so ntfy only ever sees random bytes; the topic name is a hash of it."""
     def __init__(self):
         self.answer = None          # set by the assistant: fn(text) -> reply text
+        self.voice = None           # set by the assistant: fn(text) -> audio bytes (Jarvis's own voice)
         self._load()
 
     def _load(self):
@@ -1700,7 +1701,7 @@ class PhoneLink:
         obj.setdefault("ts", time.time())
         httpx.post(f"https://ntfy.sh/{self.topic}-r", content=self.seal(obj), timeout=20)
 
-    def send_blob(self, data, name, mime, kind="file"):
+    def send_blob(self, data, name, mime, kind="file", extra=None):
         """Big things (screenshots, files) go as an encrypted ntfy attachment; the app gets a small sealed pointer."""
         import httpx, os as _os
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -1709,7 +1710,7 @@ class PhoneLink:
                       headers={"Filename": "blob.bin"}, timeout=120)
         r.raise_for_status()
         url = r.json()["attachment"]["url"]
-        self.reply({"type": "file", "kind": kind, "name": name, "mime": mime, "url": url, "size": len(data)})
+        self.reply(dict({"type": "file", "kind": kind, "name": name, "mime": mime, "url": url, "size": len(data)}, **(extra or {})))
 
     def fetch_blob(self, url):
         import httpx
@@ -1756,6 +1757,15 @@ class PhoneLink:
                 log.exception("phone ask")
                 ans = f"שגיאה: {e}"
             self.reply({"type": "answer", "id": m.get("id"), "text": (ans or "")[:1200]})
+            if m.get("voice") and self.voice and ans:
+                try:                                  # the phone plays Jarvis's real voice
+                    audio = self.voice(ans[:1200])
+                    wav = audio[:4] == b"RIFF"
+                    self.send_blob(audio, "voice.wav" if wav else "voice.mp3", "audio/wav" if wav else "audio/mpeg",
+                                   "voice", {"id": m.get("id")})
+                except Exception as e:
+                    log.warning(f"phone voice: {e}")
+                    self.reply({"type": "novoice", "id": m.get("id")})
         elif m.get("type") == "screen":
             try:
                 ui.action("📱 צילום מסך לטלפון")
@@ -2327,6 +2337,7 @@ class Assistant:
         REMINDERS = self.reminders = Reminders(self.timers.events)
         threading.Thread(target=MAIL.loop, daemon=True).start()
         PHONE.answer = self.answer_text
+        PHONE.voice = lambda t: self.speaker.synth(t)
         threading.Thread(target=PHONE.loop, daemon=True).start()
         threading.Thread(target=self.run, daemon=True).start()
         threading.Thread(target=self.stats_loop, daemon=True).start()
