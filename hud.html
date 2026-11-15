@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8">
 <title>J.A.R.V.I.S</title>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Rajdhani:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Heebo:wght@300;400;500;700&display=swap" rel="stylesheet">
 <style>
 :root{
   --bg:#01060b; --c:#3fd9ff; --c2:#a6f1ff; --cdim:rgba(63,217,255,.22); --cfaint:rgba(63,217,255,.08);
@@ -11,7 +11,7 @@
   --accent:var(--c);
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%;background:var(--bg);color:var(--text);font-family:Rajdhani,"Segoe UI",sans-serif;overflow:hidden;user-select:none}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:Heebo,"Segoe UI",Arial,sans-serif;overflow:hidden;user-select:none}
 body.listening{--accent:var(--amber)}
 body.thinking{--accent:var(--c2)}
 
@@ -135,6 +135,14 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
 .ok{color:var(--green)} .bad{color:var(--red)}
 #saveMsg{font-size:14px;margin-top:10px;min-height:20px}
 .actions{display:flex;gap:10px;justify-content:flex-end;margin-top:6px}
+.ptitle,#stateLabel,.field label,.lbl,.msg .who,.btn,.ind,.sheet h2{font-family:Heebo,"Segoe UI",sans-serif!important;letter-spacing:.08em!important;font-weight:700}
+.ptitle{font-size:12px}#stateLabel{font-size:17px;letter-spacing:.25em!important}.msg .who{font-size:11px}.btn{font-size:13px}.ind{font-size:12px}.sheet h2{font-size:20px}.field label{font-size:12.5px}
+#clock,#date,.logo,.gauge .val,#ver,#actions span{direction:ltr;unicode-bidi:isolate}
+.ptitle::after{background:linear-gradient(270deg,var(--cdim),transparent)}
+#actions div{border-left:0;padding-left:0;border-right:2px solid var(--c);padding-right:8px}
+.msg.user{border-right:0;border-left:2px solid var(--c2)}
+.msg.jarvis{border-left:0;border-right:2px solid var(--c)}
+.msg.user .who{text-align:left}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:var(--cdim)}
 </style>
 </head>
@@ -142,16 +150,16 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
 <div class="app">
   <!-- TOP -->
   <header class="top">
-    <div class="logo">J.A.R.V.I.S<small>PERSONAL AI SYSTEM · ONLINE</small></div>
+    <div class="logo">J.A.R.V.I.S<small>PERSONAL AI SYSTEM</small></div>
     <div class="indicators">
-      <div class="ind" id="indBrain"><i></i>AI CORE</div>
-      <div class="ind" id="indMic"><i></i>AUDIO IN</div>
-      <div class="ind" id="indVoice"><i></i>VOICE</div>
+      <div class="ind" id="indBrain"><i></i>מוח</div>
+      <div class="ind" id="indMic"><i></i>מיקרופון</div>
+      <div class="ind" id="indVoice"><i></i>קול</div>
     </div>
     <div class="topright">
-      <button class="btn ghost" id="updateBtn" title="Check for updates" style="height:36px;font-size:10px">UPDATE <span id="ver" style="opacity:.6"></span></button>
+      <button class="btn ghost" id="updateBtn" title="בדיקת עדכונים" style="height:36px">עדכון <span id="ver" style="opacity:.6"></span></button>
       <div><div id="clock">--:--:--</div><div id="date"></div></div>
-      <button class="iconbtn" id="openSettings" title="Settings">
+      <button class="iconbtn" id="openSettings" title="הגדרות">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
       </button>
     </div>
@@ -160,28 +168,28 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
   <!-- MAIN -->
   <section class="main">
     <aside class="panel left">
-      <div class="ptitle">DIAGNOSTICS</div>
+      <div class="ptitle">מצב המחשב</div>
       <div class="box gauges">
-        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gCpu" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vCpu">--</div><div class="lbl">CPU</div></div>
-        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gRam" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vRam">--</div><div class="lbl">RAM</div></div>
-        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gBat" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vBat">--</div><div class="lbl">PWR</div></div>
+        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gCpu" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vCpu">--</div><div class="lbl">מעבד</div></div>
+        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gRam" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vRam">--</div><div class="lbl">זיכרון</div></div>
+        <div class="gauge"><svg viewBox="0 0 72 72"><circle class="bg" cx="36" cy="36" r="30"/><circle class="fg" id="gBat" cx="36" cy="36" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><div class="val" id="vBat">--</div><div class="lbl">סוללה</div></div>
       </div>
-      <div class="ptitle">ACTIVITY LOG</div>
+      <div class="ptitle">יומן פעולות</div>
       <div class="box" style="flex:1;display:flex;min-height:0"><div id="actions"></div></div>
-      <div class="ptitle">TRY SAYING</div>
+      <div class="ptitle">נסה לומר</div>
       <div class="box tips">
-        <b>"Hey Jarvis"</b> … then:<br>
-        "Open Spotify" · "Close Chrome"<br>
-        "Play Back in Black on YouTube"<br>
-        "What's the weather tomorrow?"<br>
-        "Set a timer for 10 minutes"<br>
-        "Volume to 30" · "Take a screenshot"
+        <b>"היי ג'רוויס"</b> … ואז:<br>
+        "תפתח ספוטיפיי" · "תסגור את כרום"<br>
+        "תנגן ביוטיוב שיר של עומר אדם"<br>
+        "מה מזג האוויר מחר?"<br>
+        "שים טיימר לעשר דקות"<br>
+        "תוריד את הווליום ל־30"
       </div>
     </aside>
 
     <div class="center">
       <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
-      <div class="reactor" id="reactor" title="Click to talk">
+      <div class="reactor" id="reactor" title="לחץ כדי לדבר">
         <div class="glow"></div>
         <svg viewBox="-220 -220 440 440">
           <defs>
@@ -217,12 +225,12 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
           </g>
         </svg>
       </div>
-      <div id="stateLabel">INITIALIZING</div>
-      <div id="hint">Say “Hey Jarvis” or click the core</div>
+      <div id="stateLabel">מאתחל</div>
+      <div id="hint">תגיד "היי ג'רוויס" או לחץ על העיגול</div>
     </div>
 
     <aside class="panel right">
-      <div class="ptitle">COMMUNICATIONS</div>
+      <div class="ptitle">שיחה</div>
       <div id="chat"></div>
     </aside>
   </section>
@@ -230,11 +238,11 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
   <!-- BOTTOM -->
   <footer class="bottom">
     <canvas id="wave" width="240" height="88"></canvas>
-    <input id="cmd" placeholder="Type a command, sir…" autocomplete="off" spellcheck="false">
-    <button class="btn" id="talk" title="Talk">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>TALK
+    <input id="cmd" placeholder="הקלד פקודה, אדוני…" autocomplete="off" spellcheck="false">
+    <button class="btn" id="talk" title="דבר">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>דבר
     </button>
-    <button class="btn ghost" id="stop" title="Stop speaking">
+    <button class="btn ghost" id="stop" title="עצור דיבור">
       <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>
     </button>
   </footer>
@@ -245,50 +253,44 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
 <!-- SETTINGS -->
 <div id="settings">
   <div class="sheet">
-    <h2>SYSTEM CONFIGURATION</h2>
-    <div class="sub">Paste your keys here once. They are saved only on this computer.</div>
+    <h2>הגדרות מערכת</h2>
+    <div class="sub">מדביקים את המפתח פעם אחת. הוא נשמר רק במחשב הזה.</div>
 
     <div class="field">
-      <label>1 · CLAUDE API KEY (THE BRAIN) — REQUIRED</label>
-      <div class="help">This lets Jarvis understand anything you say. Get it at
-        <a data-link="https://console.anthropic.com/settings/keys">console.anthropic.com</a> → sign up → Billing (add a few dollars) → API Keys → Create Key → copy.</div>
+      <label>1 · מפתח Claude (המוח) — חובה</label>
+      <div class="help">בזכותו ג'רוויס מבין כל מה שאומרים לו. משיגים אותו ב־<a data-link="https://console.anthropic.com/settings/keys">console.anthropic.com</a> ← API Keys ← Create Key ← מעתיקים.</div>
       <input id="sClaude" type="password" placeholder="sk-ant-…">
     </div>
 
     <div class="field">
-      <label>2 · VOICE</label>
-      <div class="help">Free voices, no account needed.</div>
+      <label>2 · קול</label>
+      <div class="help">קולות חינמיים בעברית, בלי חשבון.</div>
       <div class="row">
         <select id="sVoice">
-          <option value="en-GB-RyanNeural">Ryan — British, male (classic butler)</option>
-          <option value="en-GB-ThomasNeural">Thomas — British, male</option>
-          <option value="en-GB-SoniaNeural">Sonia — British, female</option>
-          <option value="en-GB-LibbyNeural">Libby — British, female</option>
-          <option value="en-US-GuyNeural">Guy — American, male</option>
-          <option value="en-US-AndrewNeural">Andrew — American, male</option>
-          <option value="en-AU-WilliamNeural">William — Australian, male</option>
+          <option value="he-IL-AvriNeural">אברי — קול גברי</option>
+          <option value="he-IL-HilaNeural">הילה — קול נשי</option>
         </select>
-        <button class="btn ghost" id="testVoice" style="flex:0 0 auto">TEST</button>
+        <button class="btn ghost" id="testVoice" style="flex:0 0 auto">נסה</button>
       </div>
     </div>
 
     <div class="row">
       <div class="field">
-        <label>HOW SHOULD I ADDRESS YOU</label>
-        <input id="sName" placeholder="sir">
+        <label>איך לפנות אליך</label>
+        <input id="sName" placeholder="אדוני">
       </div>
     </div>
 
     <div class="field">
-      <label>WAKE WORD SENSITIVITY — <span id="sensVal"></span></label>
-      <div class="help">If Jarvis doesn't hear "Hey Jarvis", move left. If he wakes up by himself, move right.</div>
-      <input id="sSens" type="range" min="0.2" max="0.8" step="0.05" style="padding:0;height:auto">
+      <label>רגישות ל"היי ג'רוויס" — <span id="sensVal"></span></label>
+      <div class="help">אם הוא לא שומע אותך, הזז ימינה (רגיש יותר). אם הוא מתעורר לבד, הזז שמאלה.</div>
+      <input id="sSens" type="range" dir="rtl" min="0.2" max="0.8" step="0.05" style="padding:0;height:auto">
     </div>
 
     <div id="saveMsg"></div>
     <div class="actions">
-      <button class="btn ghost" id="closeSettings">CLOSE</button>
-      <button class="btn" id="saveSettings">SAVE &amp; CONNECT</button>
+      <button class="btn ghost" id="closeSettings">סגור</button>
+      <button class="btn" id="saveSettings">שמור והתחבר</button>
     </div>
   </div>
 </div>
@@ -312,7 +314,7 @@ const api = () => window.pywebview && window.pywebview.api;
 setInterval(() => {
   const d = new Date();
   $('#clock').textContent = d.toLocaleTimeString('en-GB');
-  $('#date').textContent = d.toLocaleDateString('en-GB', {weekday:'short', day:'2-digit', month:'short', year:'numeric'});
+  $('#date').textContent = d.toLocaleDateString('he-IL', {weekday:'long', day:'numeric', month:'long'});
 }, 1000);
 
 /* ---------- waveform */
@@ -340,8 +342,8 @@ function drawWave(){
 drawWave();
 
 /* ---------- HUD API called from Python */
-const LABELS = {idle:'STANDBY', listening:'LISTENING', thinking:'PROCESSING', speaking:'RESPONDING'};
-const HINTS = {idle:'Say “Hey Jarvis” or click the core', listening:'Go ahead, I\'m listening…', thinking:'Working on it…', speaking:'Click ■ to interrupt'};
+const LABELS = {idle:'בהמתנה', listening:'מקשיב', thinking:'חושב', speaking:'מדבר'};
+const HINTS = {idle:'תגיד "היי ג\'רוויס" או לחץ על העיגול', listening:'אני מקשיב…', thinking:'עובד על זה…', speaking:'לחץ ■ כדי לעצור'};
 window.hud = {
   setState(s){
     document.body.className = s;
@@ -351,7 +353,7 @@ window.hud = {
   addMessage(role, text){
     const d = document.createElement('div');
     d.className = 'msg ' + role;
-    d.innerHTML = `<div class="who">${role === 'user' ? 'YOU' : 'J.A.R.V.I.S'}</div>`;
+    d.innerHTML = `<div class="who">${role === 'user' ? 'אתה' : 'ג\'רוויס'}</div>`;
     d.appendChild(document.createTextNode(text));
     const c = $('#chat'); c.appendChild(d); c.scrollTop = c.scrollHeight;
   },
@@ -367,7 +369,7 @@ window.hud = {
     $('#toasts').appendChild(t); setTimeout(() => t.remove(), kind === 'info' ? 3500 : 7000);
   },
   level(v){ target = Math.max(target, v); },
-  updateAvailable(v){ const b = $('#updateBtn'); b.classList.remove('ghost'); b.classList.add('hot'); b.firstChild.textContent = 'UPDATE → ' + v + ' '; },
+  updateAvailable(v){ const b = $('#updateBtn'); b.classList.remove('ghost'); b.classList.add('hot'); b.firstChild.textContent = 'עדכון ל־' + v + ' '; },
   setStatus(s){
     const set = (id, cls) => { const e = $(id); e.classList.remove('on','warn','off'); e.classList.add(cls); };
     if (s.brain) set('#indBrain', s.brain === 'online' ? 'on' : 'warn');
@@ -391,9 +393,9 @@ document.querySelectorAll('[data-link]').forEach(a => a.onclick = () => api() &&
 
 /* ---------- settings */
 function openSettings(cfg){
-  $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'Saved ' + cfg.claude_mask + ' (leave empty to keep)' : 'sk-ant-…';
+  $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'שמור ' + cfg.claude_mask + ' (השאר ריק כדי לא לשנות)' : 'sk-ant-…';
   if (cfg.voice) $('#sVoice').value = cfg.voice;
-  $('#sName').value = cfg.user_name || 'sir';
+  $('#sName').value = cfg.user_name || 'אדוני';
   $('#sSens').value = cfg.wake_threshold; $('#sensVal').textContent = cfg.wake_threshold;
   $('#saveMsg').textContent = '';
   $('#settings').classList.add('open');
@@ -403,14 +405,14 @@ $('#openSettings').onclick = async () => openSettings(await api().get_settings()
 $('#closeSettings').onclick = () => $('#settings').classList.remove('open');
 $('#testVoice').onclick = async () => { await save(true); api().test_voice(); };
 async function save(quiet){
-  $('#saveMsg').innerHTML = '<span>Connecting…</span>';
+  $('#saveMsg').innerHTML = '<span>מתחבר…</span>';
   const r = await api().save_settings({
     claude_key: $('#sClaude').value, voice: $('#sVoice').value,
     user_name: $('#sName').value, wake_threshold: $('#sSens').value
   });
-  if (r.claude === 'ok') $('#saveMsg').innerHTML = '<span class="ok">✔ Saved. AI core connected.</span>';
-  else if (r.claude) $('#saveMsg').innerHTML = `<span class="bad">Saved, but Claude refused the key: ${r.claude}</span>`;
-  else $('#saveMsg').innerHTML = '<span class="ok">Saved. (No Claude key yet — basic mode.)</span>';
+  if (r.claude === 'ok') $('#saveMsg').innerHTML = '<span class="ok">✔ נשמר. המוח מחובר.</span>';
+  else if (r.claude) $('#saveMsg').innerHTML = `<span class="bad">נשמר, אבל Claude דחה את המפתח: ${r.claude}</span>`;
+  else $('#saveMsg').innerHTML = '<span class="ok">נשמר. (עדיין אין מפתח Claude — מצב בסיסי.)</span>';
   refreshVoiceInd(await api().get_settings());
   if (!quiet && r.claude === 'ok') setTimeout(() => $('#settings').classList.remove('open'), 1200);
 }
@@ -421,11 +423,11 @@ function refreshVoiceInd(cfg){
 }
 
 $('#updateBtn').onclick = async () => {
-  const b = $('#updateBtn'); b.disabled = true; b.firstChild.textContent = 'UPDATING… ';
+  const b = $('#updateBtn'); b.disabled = true; b.firstChild.textContent = 'מעדכן… ';
   const r = await api().update_now();
-  if (!r.ok){ hud.toast('Update failed: ' + r.error, 'error'); b.firstChild.textContent = 'UPDATE '; }
-  else if (!r.updated){ hud.toast(r.message); b.firstChild.textContent = 'UPDATE '; }
-  else { hud.toast('Updated to ' + r.version + ' - restarting…'); b.firstChild.textContent = 'RESTARTING… '; }
+  if (!r.ok){ hud.toast('העדכון נכשל: ' + r.error, 'error'); b.firstChild.textContent = 'עדכון '; }
+  else if (!r.updated){ hud.toast('אתה כבר בגרסה העדכנית ביותר.'); b.firstChild.textContent = 'עדכון '; }
+  else { hud.toast('עודכן לגרסה ' + r.version + ' - מפעיל מחדש…'); b.firstChild.textContent = 'מפעיל מחדש… '; }
   b.disabled = false;
 };
 /* ---------- boot */

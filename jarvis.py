@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "2.5"
+VERSION = "3.0"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -53,11 +53,11 @@ if sys.stdout:  # running with a console
 DEFAULT_CONFIG = {
     "anthropic_api_key": "",
     "claude_model": "claude-haiku-5-5",   # cheapest Claude model
-    "voice": "en-GB-RyanNeural",            # free British male voice
-    "user_name": "sir",
+    "voice": "he-IL-AvriNeural",            # free Hebrew male voice (female: he-IL-HilaNeural)
+    "user_name": "אדוני",
     "wake_threshold": 0.5,
     "follow_up_seconds": 6,
-    "min_confidence": 0.6,                  # speech below this confidence is ignored (non-English, noise)
+    "min_confidence": 0.5,                  # speech below this confidence is ignored (non-English, noise)
 }
 
 
@@ -73,6 +73,12 @@ def load_config():
         cfg.pop(old, None)                                  # ElevenLabs was removed
     if "fallback_voice" in cfg:
         cfg["voice"] = cfg.pop("fallback_voice")
+    if not str(cfg.get("voice", "")).startswith("he-IL"):     # v3: Hebrew
+        cfg["voice"] = "he-IL-AvriNeural"
+    if cfg.get("user_name", "").lower() in ("", "sir"):
+        cfg["user_name"] = "אדוני"
+    if cfg.get("min_confidence", 0.5) > 0.5:
+        cfg["min_confidence"] = 0.5
     if cfg.get("claude_model") == "claude-sonnet-5-5":   # move old installs to the cheap model
         cfg["claude_model"] = "claude-haiku-5-5"
     return cfg
@@ -161,7 +167,7 @@ class Speaker:
                 audio = self.synth(text)
             except Exception as e:
                 log.error(f"TTS failed: {e}")
-                ui.toast("Voice output failed (no internet?)", "warn")
+                ui.toast("ההקראה נכשלה (אין אינטרנט?)", "warn")
                 return
             path = os.path.join(tempfile.gettempdir(), f"jarvis_{int(time.time()*1000)}.mp3")
             with open(path, "wb") as f:
@@ -203,7 +209,7 @@ class Ears:
         from openwakeword.model import Model
 
         self.np, self.sd, self.sr = np, sd, sr
-        ui.toast("Loading wake-word model…")
+        ui.toast("טוען את מילת ההפעלה…")
         try:
             openwakeword.utils.download_models(model_names=["hey_jarvis"])
         except TypeError:
@@ -280,12 +286,12 @@ class Ears:
     def transcribe(self, pcm):
         """Returns English text, or None if the speech was not clearly English."""
         try:
-            res = self.rec.recognize_google(self.sr.AudioData(pcm, SAMPLE_RATE, 2), language="en-US", show_all=True)
+            res = self.rec.recognize_google(self.sr.AudioData(pcm, SAMPLE_RATE, 2), language="he-IL", show_all=True)
         except self.sr.UnknownValueError:
             return None
         except Exception as e:
             log.error(f"Speech recognition failed: {e}")
-            ui.toast("Speech recognition needs internet.", "warn")
+            ui.toast("זיהוי דיבור צריך חיבור לאינטרנט.", "warn")
             return None
         if not res or not isinstance(res, dict) or not res.get("alternative"):
             return None
@@ -295,7 +301,21 @@ class Ears:
         if conf is not None and conf < float(CFG["min_confidence"]):
             log.info(f"ignored low-confidence speech ({conf:.2f}): {text}")
             return None
-        return english_only(text)
+        return hebrew_only(text)
+
+
+def hebrew_only(text):
+    """The text if it is Hebrew, otherwise None (English, Arabic, Russian, noise...)."""
+    import re
+    if not text:
+        return None
+    heb = len(re.findall(r"[\u05d0-\u05ea]", text))
+    latin = len(re.findall(r"[A-Za-z]", text))
+    other = len(re.findall(r"[\u0400-\u04ff\u0600-\u06ff]", text))
+    if heb < 2 or other or heb * 2 < latin:
+        log.info(f"ignored non-Hebrew text: {text}")
+        return None
+    return text
 
 
 def english_only(text):
@@ -326,6 +346,26 @@ APP_ALIASES = {
     "task manager": "taskmgr", "command prompt": "cmd", "cmd": "cmd", "terminal": "wt",
     "powershell": "powershell", "camera": "microsoft.windows.camera:", "store": "ms-windows-store:",
     "mail": "outlookmail:", "calendar": "outlookcal:", "photos": "ms-photos:", "clock": "ms-clock:",
+}
+
+HE_APPS = {
+    "כרום": "chrome", "גוגל כרום": "chrome", "הכרום": "chrome", "אדג'": "msedge", "אדג": "msedge",
+    "פיירפוקס": "firefox", "פנקס רשימות": "notepad", "פנקס הרשימות": "notepad", "נוטפד": "notepad",
+    "מחשבון": "calc", "המחשבון": "calc", "סייר קבצים": "explorer", "סייר הקבצים": "explorer",
+    "צייר": "mspaint", "פיינט": "mspaint", "וורד": "winword", "אקסל": "excel", "פאוורפוינט": "powerpnt",
+    "אאוטלוק": "outlook", "הגדרות": "ms-settings:", "ההגדרות": "ms-settings:", "ספוטיפיי": "spotify",
+    "וואטסאפ": "whatsapp", "ווטסאפ": "whatsapp", "וואצאפ": "whatsapp", "מנהל המשימות": "taskmgr",
+    "שורת הפקודה": "cmd", "מצלמה": "camera", "המצלמה": "camera", "חנות": "store", "תמונות": "photos",
+    "שעון": "clock", "דיסקורד": "discord", "סטים": "steam", "זום": "zoom", "טימס": "teams",
+    "אפיק": "epic games launcher", "אפיק גיימס": "epic games launcher", "נטפליקס": "netflix",
+    "טלגרם": "telegram", "וי אס קוד": "vs code", "רובלוקס": "roblox", "מיינקראפט": "minecraft",
+}
+HE_SITES = {
+    "יוטיוב": "https://www.youtube.com", "גוגל": "https://www.google.com", "ג'ימייל": "https://mail.google.com",
+    "גימייל": "https://mail.google.com", "פייסבוק": "https://www.facebook.com", "אינסטגרם": "https://www.instagram.com",
+    "טיקטוק": "https://www.tiktok.com", "ויקיפדיה": "https://he.wikipedia.org", "וויינט": "https://www.ynet.co.il",
+    "ynet": "https://www.ynet.co.il", "וואלה": "https://www.walla.co.il", "וייז": "https://www.waze.com/live-map",
+    "ווייז": "https://www.waze.com/live-map", "צ'אט": "https://claude.ai",
 }
 
 KNOWN_FOLDERS = {
@@ -382,7 +422,7 @@ def open_app(name):
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if r.stdout.strip():
                 return {"ok": True, "opened": r.stdout.strip()}
-            return {"ok": False, "error": f"No app named '{raw}' found on this computer"}
+            return {"ok": False, "error": f"לא נמצאה במחשב תוכנה בשם '{raw}'"}
         elif OS == "Darwin":
             r = subprocess.run(["open", "-a", raw], capture_output=True)
             return {"ok": r.returncode == 0, "opened": raw}
@@ -444,7 +484,7 @@ def close_app(name):
         except Exception as e:
             log.error(f"title lookup failed: {e}")
     if not targets:
-        return {"ok": False, "error": f"Nothing called '{name}' seems to be running."}
+        return {"ok": False, "error": f"'{name}' לא פתוחה כרגע"}
     closed = []
     for pname in targets:
         if OS == "Windows":
@@ -461,7 +501,7 @@ def close_app(name):
                     pass
     if closed:
         return {"ok": True, "closed": sorted(set(closed))}
-    return {"ok": False, "error": f"Windows refused to close {', '.join(targets)} (it may need admin rights)."}
+    return {"ok": False, "error": f"Windows לא נתן לסגור את {', '.join(targets)} (אולי צריך הרשאות מנהל)"}
 
 
 # ---------- internet (works without any special account setting, and it's free)
@@ -493,7 +533,7 @@ def web_search(query, max_results=6):
                 results.append({"title": clean(t), "url": u, "snippet": clean(snips[i]) if i < len(snips) else ""})
         except Exception as e:
             log.error(f"html search failed: {e}")
-            return {"ok": False, "error": "Could not reach the internet."}
+            return {"ok": False, "error": "אין חיבור לאינטרנט"}
     return {"ok": True, "results": results}
 
 
@@ -522,7 +562,7 @@ def get_weather(city=""):
 def open_path(path):
     p = KNOWN_FOLDERS.get(path.lower().strip(), Path(os.path.expandvars(os.path.expanduser(path))))
     if not p.exists():
-        return {"ok": False, "error": f"'{path}' does not exist"}
+        return {"ok": False, "error": f"'{path}' לא קיים"}
     if OS == "Windows":
         os.startfile(str(p))
     else:
@@ -664,9 +704,14 @@ def system_info():
     }
 
 
+HE_DAYS = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
+HE_MONTHS = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"]
+
+
 def get_datetime():
     n = datetime.now()
-    return {"time": n.strftime("%H:%M"), "date": n.strftime("%A, %d %B %Y")}
+    return {"time": n.strftime("%H:%M"),
+            "date": f"יום {HE_DAYS[n.weekday()]}, {n.day} ב{HE_MONTHS[n.month - 1]} {n.year}"}
 
 
 class Timers:
@@ -678,7 +723,7 @@ class Timers:
         if not 0 < seconds <= 86400:
             return {"ok": False, "error": "invalid duration"}
         threading.Timer(seconds, lambda: self.events.put(
-            f"{CFG['user_name'].capitalize()}, your {label + ' ' if label else ''}timer is done.")).start()
+            f"{CFG['user_name']}, הטיימר{(' של ' + label) if label else ''} הסתיים.")).start()
         return {"ok": True, "seconds": seconds}
 
 
@@ -719,29 +764,32 @@ TOOLS += [
 ]
 
 ACTION_LABELS = {
-    "open_app": "Opening {name}", "close_app": "Closing {name}", "list_open_apps": "Scanning open windows",
-    "open_path": "Opening {path}", "find_files": "Searching files: {name}", "open_website": "Opening {url}",
-    "google_search": "Google: {query}", "youtube_search": "YouTube: {query}", "media_control": "Media: {action}",
-    "set_volume": "Volume → {level}%", "window_control": "Window: {action}", "press_keys": "Keys: {keys}",
-    "type_text": "Typing text", "take_screenshot": "Screenshot", "set_timer": "Timer: {seconds}s",
-    "get_datetime": "Clock sync", "system_info": "System diagnostics", "power": "Power: {action}",
-    "run_powershell": "PowerShell: {command}", "web_search": "Web: {query}",
-    "read_webpage": "Reading {url}", "get_weather": "Weather: {city}",
+    "open_app": "פותח: {name}", "close_app": "סוגר: {name}", "list_open_apps": "סורק חלונות פתוחים",
+    "open_path": "פותח: {path}", "find_files": "מחפש קבצים: {name}", "open_website": "פותח אתר: {url}",
+    "google_search": "גוגל: {query}", "youtube_search": "יוטיוב: {query}", "media_control": "מדיה: {action}",
+    "set_volume": "עוצמה ← {level}%", "window_control": "חלון: {action}", "press_keys": "מקשים: {keys}",
+    "type_text": "מקליד טקסט", "take_screenshot": "צילום מסך", "set_timer": "טיימר: {seconds} שניות",
+    "get_datetime": "בודק שעה", "system_info": "אבחון מערכת", "power": "חשמל: {action}",
+    "run_powershell": "פקודה: {command}", "web_search": "חיפוש ברשת: {query}",
+    "read_webpage": "קורא דף: {url}", "get_weather": "מזג אוויר: {city}",
 }
 
 
 def system_prompt():
-    return f"""You are J.A.R.V.I.S., the personal AI of the user, running on their own computer. Speak like the AI butler from the films: calm, precise, loyal, quietly witty, very British. Call the user "{CFG['user_name']}" now and then.
+    return f"""You are J.A.R.V.I.S., the user's personal AI, running on their own computer in Israel. Personality: the AI butler from the films - calm, precise, loyal, quietly witty.
+
+LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern Israeli Hebrew (never English, never translated-sounding). Speak about yourself in masculine form. Call the user "{CFG['user_name']}" now and then.
 
 Rules:
-- Your replies are spoken aloud. Keep them short (usually one or two sentences). No markdown, lists, emojis, URLs or citations.
-- Act ONLY on what the user explicitly asks. Never take actions on your own initiative, never "helpfully" do extra steps they didn't request. If a request is ambiguous, ask a short question instead of guessing.
-- Use the tools to actually do things on the computer, then confirm briefly ("Chrome is up, {CFG['user_name']}.").
+- Your replies are read aloud by a Hebrew voice. Keep them short (usually one or two sentences). No markdown, lists, emojis, URLs or citations. Write numbers as digits.
+- Act ONLY on what the user explicitly asks. Never act on your own initiative or add extra steps. If a request is ambiguous, ask a short question in Hebrew.
+- Use the tools to actually do things on the computer, then confirm briefly (e.g. "פתחתי את כרום, {CFG['user_name']}.").
+- Tool arguments for apps and processes must be the English/Windows name (כרום -> chrome, וורד -> word, ספוטיפיי -> spotify). Searches may be in Hebrew.
 - Closing: use close_app (check list_open_apps if you're not sure of the name). Never close Jarvis itself.
-- Risky actions (restart, shut down, sleep, sign out, any PowerShell) need a spoken confirmation first: say exactly what you'll do and ask "Shall I proceed?"; only after a clear yes call the tool with confirmed=true.
-- You DO have internet access through web_search, read_webpage and get_weather. For anything current (news, weather, prices, sports, people, opening hours...) use them and answer in your own words. Never say you can't access the internet.
+- Risky actions (restart, shut down, sleep, sign out, any PowerShell) need confirmation first: say in Hebrew exactly what you'll do and ask "להמשיך?"; only after a clear yes (כן / תמשיך / בטח) call the tool with confirmed=true.
+- You DO have internet access through web_search, read_webpage and get_weather. For anything current (news, weather, prices, sports, people, opening hours...) use them and answer in your own words in Hebrew. Never say you can't access the internet. Default weather location: the user's location (leave city empty) unless they name a place.
 - For the current time or date, call get_datetime.
-- You only understand English. If the message is not in English, or is clearly garbled speech-recognition noise / background chatter not addressed to you, reply with exactly [IGNORE] and nothing else."""
+- You only understand Hebrew. If the message is not in Hebrew, or is clearly garbled speech-recognition noise / background chatter not addressed to you, reply with exactly [IGNORE] and nothing else."""
 
 
 DANGEROUS = {"run_powershell"}
@@ -845,31 +893,22 @@ class Brain:
             text = " ".join(b.text for b in resp.content if b.type == "text").strip()
             if resp.stop_reason == "refusal":
                 self.new_conversation()
-                return text or f"I'm afraid I can't help with that one, {CFG['user_name']}."
-            return text or f"Done, {CFG['user_name']}."
-        return f"My apologies, {CFG['user_name']}, that got rather tangled. Could you try again?"
+                return text or f"מצטער {CFG['user_name']}, בזה אני לא יכול לעזור."
+            return text or f"בוצע, {CFG['user_name']}."
+        return f"סליחה {CFG['user_name']}, משהו הסתבך. תנסה שוב?"
 
 
 class BasicBrain:
-    """Used when no Claude key is set: simple commands only."""
+    """Used when no Claude key is set: open / close / time only."""
     def __init__(self, timers):
         self.timers = timers
 
     def ask(self, t):
-        s = t.lower().strip().rstrip(".!?")
-        for p in ("open ", "launch ", "start "):
-            if s.startswith(p):
-                r = open_app(s[len(p):]); return "Right away." if r.get("ok") else r["error"]
-        for p in ("close ", "quit ", "exit "):
-            if s.startswith(p):
-                r = close_app(s[len(p):]); return "Done." if r.get("ok") else r["error"]
-        if s.startswith(("search for ", "google ")):
-            google_search(s.split(" ", 2)[-1]); return "Here are the results."
-        if s.startswith("play "):
-            youtube_search(s[5:]); return "Searching YouTube."
-        if "time" in s:
-            return f"It's {get_datetime()['time']}."
-        return "I'm running in basic mode. Add your Claude key in settings and I'll understand anything you say."
+        if "שעה" in t:
+            return f"השעה {get_datetime()['time']}."
+        if "תאריך" in t or "איזה יום" in t:
+            return f"היום {get_datetime()['date']}."
+        return "אני במצב בסיסי. תוסיף מפתח של Claude בהגדרות, ואבין כל מה שתגיד."
 
 
 # ======================================================================= SELF-UPDATE
@@ -923,7 +962,7 @@ def do_update():
             shutil.copy2(dst, backup / name.replace("/", "_"))
         dst.write_bytes(data)
     if files.get("requirements.txt", old_req) != old_req:
-        ui.toast("Installing new components… (about a minute)")
+        ui.toast("מתקין רכיבים חדשים… (בערך דקה)")
         py = Path(sys.executable)
         if py.name.lower() == "pythonw.exe":
             py = py.with_name("python.exe")
@@ -938,7 +977,7 @@ def restart_jarvis():
 
 
 # ======================================================================= ASSISTANT LOOP
-STOP_PHRASES = ("that's all", "thats all", "thank you jarvis", "never mind", "nevermind", "go to sleep", "that will be all")
+STOP_PHRASES = ("זהו", "זה הכל", "זה הכול", "תודה זהו", "זהו תודה", "לך לישון", "עזוב", "לא משנה", "תודה ג'רוויס")
 
 
 class Assistant:
@@ -990,41 +1029,65 @@ class Assistant:
     def quick_command(self, text):
         """Open/close commands are done directly - instant, free and reliable."""
         import re
-        s = text.lower().strip().rstrip(".!?")
-        s = re.sub(r"^(hey |ok |okay )?jarvis[, ]*", "", s)
-        s = re.sub(r"^(please |can you |could you |would you )", "", s).replace(" please", "").strip()
-        if re.search(r"\b(update yourself|check for updates?|install (the )?update|upgrade yourself)\b", s):
-            ui.action("Checking for updates")
+        u = CFG["user_name"]
+        s = text.strip().rstrip(".!?,").replace("׳", "'").replace("’", "'").replace("`", "'")
+        s = re.sub(r"^(היי |הי |הֵיי )?ג'?ארוויס[, ]*|^(היי |הי )?ג'רוויס[, ]*", "", s)
+        s = re.sub(r"^(בבקשה |תוכל |אתה יכול |תעשה לי טובה )", "", s).replace(" בבקשה", "").strip()
+        if re.search(r"(תתעדכן|תעדכן את עצמך|עדכן את עצמך|תבדוק עדכונים|בדוק עדכונים|תתקין עדכון)", s):
+            ui.action("בודק עדכונים")
             r = do_update()
             if not r.get("ok"):
-                return "I couldn't reach the update server, " + CFG["user_name"] + "."
+                return f"לא הצלחתי להגיע לשרת העדכונים, {u}."
             if not r.get("updated"):
-                return f"I'm already running the latest version, {CFG['user_name']}."
-            self.speaker.say(f"Update {r['version']} installed. Restarting now.")
+                return f"אני כבר בגרסה העדכנית ביותר, {u}."
+            self.speaker.say(f"עדכון {r['version']} הותקן. מפעיל את עצמי מחדש.")
             restart_jarvis()
-        m = re.match(r"^(close|quit|exit|kill|shut down|terminate)\s+(?:the\s+|my\s+)?(.+)$", s)
-        if m and m.group(2) not in ("computer", "pc", "laptop", "the computer", "yourself", "jarvis"):
-            app = re.sub(r"\s+(app|application|window|program)$", "", m.group(2))
-            ui.action(f"Closing {app}")
-            r = close_app(app)
+
+        def he_name(raw):
+            n = raw.strip()
+            while True:
+                m2 = re.match(r"^(את|לי|גם)\s+(.+)$", n)
+                if not m2:
+                    break
+                n = m2.group(2).strip()
+            n = re.sub(r"\s+(בבקשה|עכשיו)$", "", n)
+            if n in HE_APPS or n in HE_SITES:
+                return n
+            if n.startswith("ה") and (n[1:] in HE_APPS or n[1:] in HE_SITES):
+                return n[1:]
+            return n
+
+        m = re.match(r"^(תסגור|סגור|תסגרי|סגרי|תצא מ|צא מ)\s*(.+)$", s)
+        if m:
+            name = he_name(m.group(2))
+            latin = re.fullmatch(r"[A-Za-z0-9 .+-]+", name) is not None
+            if name in ("המחשב", "מחשב", "עצמך", "ג'רוויס") or (name not in HE_APPS and not latin):
+                return None          # Claude handles (asks for confirmation / finds the window)
+            ui.action(f"סוגר: {name}")
+            r = close_app(HE_APPS.get(name, name))
             if r.get("ok"):
-                return f"{app.title()} is closed, {CFG['user_name']}."
+                return f"סגרתי את {name}, {u}."
             ui.action("✗ " + r["error"])
-            return None  # let Claude try (it can list open windows)
-        m = re.match(r"^(open|launch|start|run)\s+(?:the\s+|my\s+)?(.+)$", s)
-        if m and not any(w in m.group(2) for w in (" and ", " then ", "folder", "file", "website", ".com", "settings for")):
-            app = m.group(2)
-            ui.action(f"Opening {app}")
-            r = open_app(app)
-            if r.get("ok"):
-                return f"Opening {app.title()}, {CFG['user_name']}."
-            ui.action("✗ " + r["error"])
+            return None
+        m = re.match(r"^(תפתח|פתח|תפתחי|פתחי|תפעיל|הפעל|תריץ|תעלה)\s+(.+)$", s)
+        if m and not re.search(r"( ואז |תיקי|קובץ|אתר )", " " + m.group(2) + " "):
+            name = he_name(m.group(2))
+            if name in HE_SITES:
+                ui.action(f"פותח אתר: {name}")
+                open_website(HE_SITES[name])
+                return f"פותח את {name}, {u}."
+            if name in HE_APPS or re.fullmatch(r"[A-Za-z0-9 .+-]+", name):
+                ui.action(f"פותח: {name}")
+                r = open_app(HE_APPS.get(name, name))
+                if r.get("ok"):
+                    return f"פותח את {name}, {u}."
+                ui.action("✗ " + r["error"])
             return None
         return None
 
     def think(self, text):
-        if not english_only(text):
-            ui.toast("English only, sir.", "warn")
+        if not hebrew_only(text):
+            ui.toast("אני מבין רק עברית.", "warn")
             return False
         ui.say("user", text)
         ui.state("thinking")
@@ -1040,15 +1103,15 @@ class Assistant:
                 log.exception("brain")
                 msg = str(e)
                 low = msg.lower()
-                ui.toast("Error: " + msg[:180], "error")
+                ui.toast("שגיאה: " + msg[:180], "error")
                 if "authentication" in low or "401" in msg or "api key" in low:
-                    answer = "My connection to Claude was refused. Please check the API key in settings."
+                    answer = "Claude דחה את החיבור. תבדוק את המפתח בהגדרות."
                 elif "credit" in low or "billing" in low:
-                    answer = "It seems the Claude account is out of credit."
+                    answer = "נראה שנגמר הקרדיט בחשבון של Claude."
                 elif "connect" in low or "timeout" in low or "network" in low:
-                    answer = "I can't reach my servers at the moment. Please check the internet connection."
+                    answer = "אני לא מצליח להגיע לשרתים כרגע. תבדוק את החיבור לאינטרנט."
                 else:
-                    answer = "Something went wrong on my end. The error is on the screen, sir."
+                    answer = f"משהו השתבש אצלי. השגיאה מופיעה על המסך, {CFG['user_name']}."
         if not answer or "[IGNORE]" in answer:
             log.info(f"ignored: {text}")
             ui.state("idle")
@@ -1080,7 +1143,7 @@ class Assistant:
             self.speaker = Speaker()
         except Exception as e:
             log.exception("speaker")
-            ui.toast(f"Audio output error: {e}", "error")
+            ui.toast(f"בעיה ברמקול: {e}", "error")
             return
         self.build_brain()
         try:
@@ -1089,15 +1152,15 @@ class Assistant:
         except Exception as e:
             log.exception("ears")
             ui.status({"mic": "offline"})
-            ui.toast("Microphone / wake-word unavailable. You can still type commands.", "error")
-        greet = datetime.now().hour
-        part = "morning" if 5 <= greet < 12 else "afternoon" if greet < 18 else "evening"
-        self.speaker.say(f"Good {part}, {CFG['user_name']}. All systems are online.")
+            ui.toast("המיקרופון לא זמין. אפשר להקליד פקודות.", "error")
+        h = datetime.now().hour
+        part = "בוקר טוב" if 5 <= h < 12 else "צהריים טובים" if h < 17 else "ערב טוב" if h < 22 else "לילה טוב"
+        self.speaker.say(f"{part}, {CFG['user_name']}. כל המערכות פועלות.")
         def bg_check():
             info = check_update()
             if info.get("available"):
                 ui.js("updateAvailable", info["latest"])
-                ui.toast(f"Update {info['latest']} available - click UPDATE or say 'update yourself'.")
+                ui.toast(f"יש עדכון {info['latest']} - לחץ על 'עדכון' או תגיד 'תתעדכן'.")
         threading.Thread(target=bg_check, daemon=True).start()
 
         while True:
@@ -1108,8 +1171,8 @@ class Assistant:
             self.ears.beep()
             q = self.ears.listen()      # nothing / non-English -> silently back to standby
             while q:
-                if any(p in q.lower() for p in STOP_PHRASES) and len(q.split()) <= 5:
-                    self.speaker.say(f"Very good, {CFG['user_name']}.")
+                if any(p in q for p in STOP_PHRASES) and len(q.split()) <= 4:
+                    self.speaker.say(f"בשמחה, {CFG['user_name']}.")
                     break
                 if not self.think(q):
                     break
@@ -1176,7 +1239,7 @@ class Api:
     def test_voice(self):
         if assistant.speaker:
             threading.Thread(target=assistant.speaker.say,
-                             args=(f"At your service, {CFG['user_name']}. How do I sound?",), daemon=True).start()
+                             args=(f"לשירותך, {CFG['user_name']}. איך אני נשמע?",), daemon=True).start()
 
     def open_link(self, url):
         webbrowser.open(url)
