@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "4.1"
+VERSION = "4.2"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -609,6 +609,11 @@ HE_SITES = {
     "טיקטוק": "https://www.tiktok.com", "ויקיפדיה": "https://he.wikipedia.org", "וויינט": "https://www.ynet.co.il",
     "ynet": "https://www.ynet.co.il", "וואלה": "https://www.walla.co.il", "וייז": "https://www.waze.com/live-map",
     "ווייז": "https://www.waze.com/live-map", "צ'אט": "https://claude.ai",
+    "גוגל מפות": "https://www.google.com/maps", "מפות": "https://www.google.com/maps",
+    "גוגל דרייב": "https://drive.google.com", "דרייב": "https://drive.google.com",
+    "גוגל תרגום": "https://translate.google.com", "תרגום": "https://translate.google.com",
+    "יומן גוגל": "https://calendar.google.com", "גוגל יומן": "https://calendar.google.com",
+    "גוגל תמונות": "https://photos.google.com", "גוגל דוקס": "https://docs.google.com",
 }
 
 KNOWN_FOLDERS = {
@@ -829,20 +834,63 @@ def find_files(name, max_results=15):
     return {"results": found}
 
 
+def find_chrome():
+    """Path to Google Chrome, or None."""
+    if OS == "Windows":
+        for base in (os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)"), os.environ.get("LOCALAPPDATA")):
+            if base:
+                p = Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"
+                if p.exists():
+                    return str(p)
+        try:   # Chrome registers its path here
+            import winreg
+            for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    k = winreg.OpenKey(root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe")
+                    v = winreg.QueryValue(k, None)
+                    if v and Path(v).exists():
+                        return v
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        return None
+    if OS == "Darwin":
+        p = "/Applications/Google Chrome.app"
+        return p if Path(p).exists() else None
+    return shutil.which("google-chrome") or shutil.which("chromium")
+
+
+def open_in_chrome(url):
+    """Everything on the web opens in Google Chrome (falls back to the default browser if it isn't installed)."""
+    chrome = find_chrome()
+    try:
+        if chrome and OS == "Darwin":
+            subprocess.Popen(["open", "-a", chrome, url])
+            return True
+        if chrome:
+            subprocess.Popen([chrome, url], creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+            return True
+    except Exception as e:
+        log.error(f"chrome: {e}")
+    webbrowser.open(url)
+    return False
+
+
 def open_website(url):
     if not url.startswith("http"):
         url = "https://" + url
-    webbrowser.open(url)
-    return {"ok": True, "opened": url}
+    in_chrome = open_in_chrome(url)
+    return {"ok": True, "opened": url, "browser": "chrome" if in_chrome else "default"}
 
 
 def google_search(query):
-    webbrowser.open("https://www.google.com/search?q=" + urllib.parse.quote(query))
+    open_in_chrome("https://www.google.com/search?q=" + urllib.parse.quote(query))
     return {"ok": True}
 
 
 def youtube_search(query, play_first=False):
-    webbrowser.open("https://www.youtube.com/results?search_query=" + urllib.parse.quote(query))
+    open_in_chrome("https://www.youtube.com/results?search_query=" + urllib.parse.quote(query))
     return {"ok": True}
 
 
@@ -1140,6 +1188,7 @@ Rules:
 - Risky actions (restart, shut down, sleep, sign out, any PowerShell) need confirmation first: say in Hebrew exactly what you'll do and ask "להמשיך?"; only after a clear yes (כן / תמשיך / בטח) call the tool with confirmed=true.
 - You DO have internet access through web_search, read_webpage and get_weather. For anything current (news, weather, prices, sports, people, opening hours...) use them and answer in your own words in Hebrew. Never say you can't access the internet. Default weather location: the user's location (leave city empty) unless they name a place.
 - For the current time or date, call get_datetime.
+- Anything Google or web (Google search, YouTube, Gmail, Google Maps, Drive, Translate, any site) opens in Google Chrome: use google_search / youtube_search / open_website (e.g. Gmail -> https://mail.google.com, Maps -> https://www.google.com/maps/search/<place>). Don't open another browser.
 - Phone: you can send WhatsApp messages to the user's phone (send_whatsapp) and set reminders (set_reminder, with whatsapp=true when they want it on the phone). Only when they ask.
 - You only understand Hebrew. If the message is not in Hebrew, or is clearly garbled speech-recognition noise / background chatter not addressed to you, reply with exactly [IGNORE] and nothing else."""
 
@@ -1836,7 +1885,7 @@ class Api:
         return {"ok": True, "message": "✔ הקול הרגיל עובד."}
 
     def open_link(self, url):
-        webbrowser.open(url)
+        open_in_chrome(url)
 
     def version(self):
         return VERSION
