@@ -389,6 +389,17 @@ body.gl .reactor .glow{opacity:.18}
     </div>
 
     <div class="field">
+      <label>מוזיקת פתיחה</label>
+      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="sIntro" style="width:auto;height:auto"> לנגן מוזיקה כשאני פותח את ג'רוויס</label>
+      <div class="row" style="margin-bottom:6px">
+        <select id="sIntroMode"><option value="builtin">צליל ההפעלה של ג'רוויס</option><option value="file">שיר משלי (קובץ במחשב)</option></select>
+        <button class="btn ghost" id="introPick" style="flex:0 0 auto">בחר קובץ…</button>
+        <button class="btn ghost" id="introTest" style="flex:0 0 auto">▶ נסה</button>
+      </div>
+      <div class="help" id="introFile"></div>
+    </div>
+
+    <div class="field">
       <label>שגרות</label>
       <div class="help">פקודה אחת שעושה כמה דברים. אומרים "היי ג'רוויס, <b>מצב עבודה</b>" (או לוחצים עליה באפליקציה באייפון). שם השגרה בסוגריים מרובעים, ומתחתיו שלב בכל שורה. אפשר גם פשוט לבקש מג'רוויס: "תיצור שגרה בשם... שפותחת...".<br>שלבים אפשריים: <span id="routineHelp" style="color:var(--c2)"></span></div>
       <textarea id="sRoutines" dir="rtl" spellcheck="false" style="width:100%;min-height:150px;background:#000a12;border:1px solid var(--cdim);color:var(--text);font:14px/1.6 Heebo,sans-serif;padding:10px;border-radius:6px;resize:vertical;outline:none"></textarea>
@@ -545,6 +556,8 @@ function openSettings(cfg){
   $('#sGemVoice').value = cfg.gemini_voice || 'Charon';
   showEngine();
   $('#sName').value = cfg.user_name || 'אדוני';
+  $('#sIntro').checked = cfg.intro_music !== false; $('#sIntroMode').value = cfg.intro_mode || 'builtin';
+  $('#introFile').textContent = cfg.intro_file ? 'הקובץ שנבחר: ' + cfg.intro_file.split(/[\\/]/).pop() : 'אפשר לבחור כל שיר שיש לך במחשב (mp3). מתנגנות עד 12 השניות הראשונות.';
   $('#sRoutines').value = cfg.routines || ''; $('#routineHelp').textContent = cfg.routine_help || ''; $('#routineMsg').textContent = '';
   $('#sSens').value = cfg.wake_threshold; $('#sensVal').textContent = cfg.wake_threshold;
   $('#saveMsg').textContent = '';
@@ -589,7 +602,8 @@ async function save(quiet){
     pause: $('#sPause').value, bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked,
     brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
-    user_name: $('#sName').value, wake_threshold: $('#sSens').value, routines: $('#sRoutines').value
+    user_name: $('#sName').value, wake_threshold: $('#sSens').value, routines: $('#sRoutines').value,
+    intro_music: $('#sIntro').checked, intro_mode: $('#sIntroMode').value
   });
   $('#routineMsg').innerHTML = (r.routine_warn || []).length ? '<span class="bad">שורות שג\'רוויס לא מבין: ' + r.routine_warn.map(x => x.replace(/</g, '&lt;')).join(' · ') + '</span>' : '';
   const key = r.engine === 'groq' ? r.groq : r.claude, name = r.engine === 'groq' ? 'Groq' : 'Claude';
@@ -600,6 +614,8 @@ async function save(quiet){
   if (!quiet && (r.engine === 'groq' ? r.groq : r.claude) === 'ok') setTimeout(() => $('#settings').classList.remove('open'), 1200);
 }
 $('#saveSettings').onclick = () => save(false);
+$('#introPick').onclick = async () => { const r = await api().pick_intro(); if (r.ok) { $('#sIntroMode').value = 'file'; $('#introFile').textContent = 'הקובץ שנבחר: ' + r.file.split(/[\\/]/).pop(); } };
+$('#introTest').onclick = () => api().test_intro($('#sIntroMode').value);
 function refreshVoiceInd(cfg){
   const e = $('#indVoice'); e.classList.remove('on','warn','off');
   e.classList.add('on');
