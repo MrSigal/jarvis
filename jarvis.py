@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "3.2"
+VERSION = "3.3"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -54,10 +54,10 @@ DEFAULT_CONFIG = {
     "anthropic_api_key": "",
     "claude_model": "claude-haiku-5-5",   # cheapest Claude model
     "voice": "he-IL-AvriNeural",            # free Hebrew male voice (female: he-IL-HilaNeural)
-    "tts_engine": "edge",                   # edge (fast, built-in) | voicestudio (local VoiceStudio app)
-    "vs_url": "http://127.0.0.1:3900",
-    "vs_model": "omnivoice",
-    "vs_voice": "default",
+    "tts_engine": "edge",                   # edge (fast, built-in) | gemini (Google, most natural)
+    "gemini_api_key": "",                   # free key from aistudio.google.com/apikey
+    "gemini_voice": "Charon",
+    "gemini_model": "",                     # remembered automatically once one works
     "user_name": "אדוני",
     "wake_threshold": 0.5,
     "follow_up_seconds": 6,
@@ -77,6 +77,10 @@ def load_config():
         cfg.pop(old, None)                                  # ElevenLabs was removed
     if "fallback_voice" in cfg:
         cfg["voice"] = cfg.pop("fallback_voice")
+    for old in ("vs_url", "vs_model", "vs_voice"):
+        cfg.pop(old, None)                                  # VoiceStudio was removed
+    if cfg.get("tts_engine") not in ("edge", "gemini"):
+        cfg["tts_engine"] = "edge"
     if not str(cfg.get("voice", "")).startswith("he-IL"):     # v3: Hebrew
         cfg["voice"] = "he-IL-AvriNeural"
     if cfg.get("user_name", "").lower() in ("", "sir"):
@@ -157,41 +161,58 @@ class Speaker:
             return buf.getvalue()
         return asyncio.run(run())
 
-    # ---- VoiceStudio app running on this computer (OpenAI-compatible API)
-    def _voicestudio(self, text):
-        import httpx, base64
-        base = CFG["vs_url"].rstrip("/")
-        r = httpx.post(f"{base}/v1/audio/speech", timeout=90, json={
-            "model": CFG["vs_model"], "input": text[:4000], "voice": CFG["vs_voice"] or "default",
-            "language": "he", "response_format": "mp3"})
-        if r.status_code != 200:
-            raise RuntimeError(f"VoiceStudio {r.status_code}: {r.text[:200]}")
-        ctype = r.headers.get("content-type", "")
-        if not ctype.startswith("application/json"):
-            return r.content                                   # raw audio
-        d = r.json()                                           # some builds answer with JSON
-        for k in ("audio", "audio_base64", "b64", "data"):
-            if isinstance(d.get(k), str) and len(d[k]) > 100:
-                return base64.b64decode(d[k].split(",")[-1])
-        for k in ("url", "audio_url", "path", "file", "output"):
-            v = d.get(k)
-            if isinstance(v, str) and v:
-                if v.startswith("http") or v.startswith("/"):
-                    if v.startswith("/") and not os.path.exists(v):
-                        v = base + v
-                    if v.startswith("http"):
-                        return httpx.get(v, timeout=60).content
-                    return Path(v).read_bytes()
-                return Path(v).read_bytes()
-        raise RuntimeError(f"VoiceStudio answer not understood: {str(d)[:200]}")
+    # ---- Google Gemini TTS (free API key from Google AI Studio)
+    GEMINI_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts",
+                     "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
+
+    def _gemini(self, text):
+        import httpx, base64, re
+        key = CFG["gemini_api_key"].strip()
+        prompt = ("Read the following Hebrew text aloud in natural, fluent Israeli Hebrew, "
+                  "in the calm, confident, slightly warm tone of a loyal AI butler. "
+                  "Say only the text itself:\n" + text)
+        body = {"contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseModalities": ["AUDIO"],
+                                     "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {
+                                         "voiceName": CFG.get("gemini_voice") or "Charon"}}}}}
+        models = ([CFG["gemini_model"]] if CFG.get("gemini_model") else []) + \
+                 [m for m in self.GEMINI_MODELS if m != CFG.get("gemini_model")]
+        last = ""
+        for model in models:
+            r = httpx.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                           params={"key": key}, json=body, timeout=45)
+            if r.status_code in (404, 400) and ("not found" in r.text.lower() or "not supported" in r.text.lower()):
+                last = f"{model}: {r.status_code}"
+                continue
+            if r.status_code == 429:
+                raise RuntimeError("quota")
+            if r.status_code != 200:
+                raise RuntimeError(f"Gemini {r.status_code}: {r.text[:200]}")
+            part = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
+            audio = base64.b64decode(part["data"])
+            mime = part.get("mimeType", "")
+            if CFG.get("gemini_model") != model:
+                CFG["gemini_model"] = model
+                save_config()
+            if "wav" in mime or audio[:4] == b"RIFF":
+                return audio
+            rate = int((re.search(r"rate=(\d+)", mime) or [0, 24000])[1])
+            buf = BytesIO()
+            with wave.open(buf, "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(audio)
+            return buf.getvalue()
+        raise RuntimeError(f"no Gemini TTS model available ({last})")
 
     def synth(self, text):
-        if CFG.get("tts_engine") == "voicestudio":
+        if CFG.get("tts_engine") == "gemini" and CFG.get("gemini_api_key"):
             try:
-                return self._voicestudio(text)
+                return self._gemini(text)
             except Exception as e:
-                log.error(f"VoiceStudio failed: {e}")
-                ui.toast("VoiceStudio לא עונה - משתמש בקול הרגיל. האם האפליקציה פתוחה?", "warn")
+                log.error(f"Gemini TTS failed: {e}")
+                if "quota" in str(e):
+                    ui.toast("נגמרה המכסה החינמית של Gemini להיום - משתמש בקול הרגיל.", "warn")
+                else:
+                    ui.toast("הקול של Gemini לא עבד - משתמש בקול הרגיל. בדוק את המפתח בהגדרות.", "warn")
         return self._edge(text)
 
     def say(self, text, show=True):
@@ -1014,61 +1035,6 @@ def restart_jarvis():
     os._exit(0)
 
 
-# ======================================================================= VOICESTUDIO INSTALLER (from GitHub)
-VS_REPO = "debpalash/VoiceStudio"
-
-
-def pick_windows_asset(assets):
-    """Choose the Windows x64 installer from a GitHub release's assets."""
-    best = None
-    for a in assets:
-        n = a.get("name", "").lower()
-        if not n.endswith((".exe", ".msi")) or n.endswith(".sig"):
-            continue
-        if "arm64" in n or "aarch64" in n:
-            continue
-        if not any(k in n for k in ("win", "x64", "setup", ".msi")):
-            continue
-        score = (n.endswith(".exe"), "x64" in n, "win" in n, "setup" in n or "installer" in n)
-        if best is None or score > best[0]:
-            best = (score, a)
-    return best[1] if best else None
-
-
-def install_voicestudio():
-    """Download the latest VoiceStudio Windows installer from GitHub and start it."""
-    import httpx
-    try:
-        rel = httpx.get(f"https://api.github.com/repos/{VS_REPO}/releases/latest",
-                        headers={"Accept": "application/vnd.github+json"}, timeout=20, follow_redirects=True).json()
-    except Exception as e:
-        return {"ok": False, "error": f"לא הצלחתי להגיע ל־GitHub: {e}"}
-    asset = pick_windows_asset(rel.get("assets", []))
-    if not asset:
-        webbrowser.open(f"https://github.com/{VS_REPO}/releases/latest")
-        return {"ok": False, "error": "לא מצאתי קובץ התקנה ל־Windows, פתחתי לך את דף ההורדות ב־GitHub."}
-    dest = KNOWN_FOLDERS["downloads"] / asset["name"]
-    total = int(asset.get("size") or 0)
-    ui.toast(f"מוריד את VoiceStudio {rel.get('tag_name', '')} מ־GitHub…")
-    try:
-        done, last = 0, 0
-        with httpx.stream("GET", asset["browser_download_url"], timeout=60, follow_redirects=True) as r:
-            r.raise_for_status()
-            with open(dest, "wb") as f:
-                for chunk in r.iter_bytes(1 << 20):
-                    f.write(chunk)
-                    done += len(chunk)
-                    if total and done * 100 // total >= last + 20:
-                        last = done * 100 // total
-                        ui.toast(f"מוריד VoiceStudio… {last}%")
-    except Exception as e:
-        return {"ok": False, "error": f"ההורדה נכשלה: {e}"}
-    ui.action(f"הורד: {asset['name']}")
-    if OS == "Windows":
-        os.startfile(str(dest))
-    return {"ok": True, "file": str(dest), "version": rel.get("tag_name", "")}
-
-
 # ======================================================================= ASSISTANT LOOP
 STOP_PHRASES = ("זהו", "זה הכל", "זה הכול", "תודה זהו", "זהו תודה", "לך לישון", "עזוב", "לא משנה", "תודה ג'רוויס")
 
@@ -1291,7 +1257,8 @@ class Api:
         return {
             "has_claude": bool(CFG["anthropic_api_key"]), "claude_mask": _mask(CFG["anthropic_api_key"]),
             "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
-            "vs_voice": CFG.get("vs_voice", "default"), "vs_model": CFG.get("vs_model", "omnivoice"),
+            "has_gemini": bool(CFG.get("gemini_api_key")), "gemini_mask": _mask(CFG.get("gemini_api_key", "")),
+            "gemini_voice": CFG.get("gemini_voice", "Charon"),
             "user_name": CFG["user_name"], "wake_threshold": CFG["wake_threshold"],
         }
 
@@ -1300,12 +1267,12 @@ class Api:
             CFG["anthropic_api_key"] = s["claude_key"].strip()
         if s.get("voice"):
             CFG["voice"] = s["voice"]
-        if s.get("tts_engine") in ("edge", "voicestudio"):
+        if s.get("tts_engine") in ("edge", "gemini"):
             CFG["tts_engine"] = s["tts_engine"]
-        if s.get("vs_voice"):
-            CFG["vs_voice"] = s["vs_voice"]
-        if s.get("vs_model"):
-            CFG["vs_model"] = s["vs_model"]
+        if s.get("gemini_key", "").strip():
+            CFG["gemini_api_key"] = s["gemini_key"].strip()
+        if s.get("gemini_voice"):
+            CFG["gemini_voice"] = s["gemini_voice"]
         if s.get("user_name", "").strip():
             CFG["user_name"] = s["user_name"].strip()
         if s.get("wake_threshold"):
@@ -1322,34 +1289,6 @@ class Api:
                 result["claude"] = str(e)[:200]
         assistant.build_brain()
         return result
-
-    def vs_check(self):
-        """Is VoiceStudio running? Returns its voices."""
-        import httpx
-        base = CFG["vs_url"].rstrip("/")
-        try:
-            r = httpx.get(f"{base}/v1/audio/voices", timeout=8)
-        except Exception:
-            return {"ok": False, "error": "VoiceStudio לא פתוח. תפתח את האפליקציה ונסה שוב."}
-        if r.status_code != 200:
-            return {"ok": False, "error": f"VoiceStudio ענה {r.status_code}"}
-        try:
-            d = r.json()
-        except Exception:
-            d = []
-        items = d if isinstance(d, list) else d.get("voices") or d.get("data") or d.get("profiles") or []
-        voices = [{"id": "default", "name": "ברירת מחדל"}]
-        for v in items:
-            if isinstance(v, str):
-                voices.append({"id": v, "name": v})
-            elif isinstance(v, dict):
-                vid = v.get("id") or v.get("voice_id") or v.get("profile_id") or v.get("name")
-                if vid and vid != "default":
-                    voices.append({"id": str(vid), "name": str(v.get("name") or vid)})
-        return {"ok": True, "voices": voices}
-
-    def vs_install(self):
-        return install_voicestudio()
 
     def send_text(self, text):
         if text and text.strip():

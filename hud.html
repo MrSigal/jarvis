@@ -264,23 +264,35 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
 
     <div class="field">
       <label>2 · קול</label>
-      <div class="help">בחר מנוע קול. VoiceStudio עובד רק כשהאפליקציה שלו פתוחה במחשב. אם הוא לא עונה, ג'רוויס חוזר לקול הרגיל.</div>
       <div class="row" style="margin-bottom:8px">
         <select id="sEngine">
-          <option value="edge">קול רגיל — מהיר, מובנה</option>
-          <option value="voicestudio">VoiceStudio — על המחשב</option>
+          <option value="edge">אברי / הילה — מהיר, בלי הרשמה</option>
+          <option value="gemini">Gemini של גוגל — הכי טבעי (מפתח חינמי)</option>
         </select>
       </div>
-      <div class="row" id="edgeRow">
-        <select id="sVoice">
-          <option value="he-IL-AvriNeural">אברי — קול גברי</option>
-          <option value="he-IL-HilaNeural">הילה — קול נשי</option>
-        </select>
+      <div id="edgeRow">
+        <div class="row">
+          <select id="sVoice">
+            <option value="he-IL-AvriNeural">אברי — קול גברי</option>
+            <option value="he-IL-HilaNeural">הילה — קול נשי</option>
+          </select>
+        </div>
       </div>
-      <div class="row" id="vsRow" style="display:none">
-        <select id="sVsVoice"><option value="default">ברירת מחדל</option></select>
-        <button class="btn ghost" id="vsConnect" style="flex:0 0 auto">חבר</button>
-        <button class="btn ghost" id="vsInstall" style="flex:0 0 auto" title="מוריד את VoiceStudio מ־GitHub ומפעיל את ההתקנה">התקן מ־GitHub</button>
+      <div id="gemRow" style="display:none">
+        <div class="help">מקבלים מפתח חינמי ב־<a data-link="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a> ← מתחברים עם חשבון גוגל ← Create API key ← מעתיקים ומדביקים כאן.</div>
+        <input id="sGemKey" type="password" placeholder="AIza…" style="margin-bottom:8px">
+        <select id="sGemVoice">
+          <option value="Charon">שרון — גבר, עמוק ורגוע</option>
+          <option value="Orus">אורוס — גבר, תקיף</option>
+          <option value="Iapetus">יאפטוס — גבר, צלול</option>
+          <option value="Algenib">אלג'ניב — גבר, מחוספס</option>
+          <option value="Rasalgethi">ראסלגתי — גבר, מסביר</option>
+          <option value="Sadaltager">סדלטגר — גבר, ידען</option>
+          <option value="Fenrir">פנריר — גבר, נלהב</option>
+          <option value="Kore">קורה — אישה, תקיפה</option>
+          <option value="Aoede">איאודה — אישה, קלילה</option>
+          <option value="Sulafat">סולפת — אישה, חמה</option>
+        </select>
       </div>
       <div class="row" style="margin-top:8px">
         <div id="vsMsg" style="font-size:14px;align-self:center"></div>
@@ -410,9 +422,8 @@ function openSettings(cfg){
   $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'שמור ' + cfg.claude_mask + ' (השאר ריק כדי לא לשנות)' : 'sk-ant-…';
   if (cfg.voice) $('#sVoice').value = cfg.voice;
   $('#sEngine').value = cfg.tts_engine || 'edge';
-  if (cfg.vs_voice && ![...$('#sVsVoice').options].some(o => o.value === cfg.vs_voice))
-    $('#sVsVoice').insertAdjacentHTML('beforeend', `<option value="${cfg.vs_voice}">${cfg.vs_voice}</option>`);
-  $('#sVsVoice').value = cfg.vs_voice || 'default';
+  $('#sGemKey').value = ''; $('#sGemKey').placeholder = cfg.has_gemini ? 'שמור ' + cfg.gemini_mask + ' (השאר ריק כדי לא לשנות)' : 'AIza…';
+  $('#sGemVoice').value = cfg.gemini_voice || 'Charon';
   showEngine();
   $('#sName').value = cfg.user_name || 'אדוני';
   $('#sSens').value = cfg.wake_threshold; $('#sensVal').textContent = cfg.wake_threshold;
@@ -423,35 +434,18 @@ $('#sSens').oninput = e => $('#sensVal').textContent = e.target.value;
 $('#openSettings').onclick = async () => openSettings(await api().get_settings());
 $('#closeSettings').onclick = () => $('#settings').classList.remove('open');
 function showEngine(){
-  const vs = $('#sEngine').value === 'voicestudio';
-  $('#edgeRow').style.display = vs ? 'none' : 'flex';
-  $('#vsRow').style.display = vs ? 'flex' : 'none';
+  const g = $('#sEngine').value === 'gemini';
+  $('#edgeRow').style.display = g ? 'none' : 'block';
+  $('#gemRow').style.display = g ? 'block' : 'none';
   $('#vsMsg').textContent = '';
 }
-$('#sEngine').onchange = () => { showEngine(); if ($('#sEngine').value === 'voicestudio') $('#vsConnect').click(); };
-$('#vsConnect').onclick = async () => {
-  $('#vsMsg').innerHTML = '<span>מתחבר ל־VoiceStudio…</span>';
-  const r = await api().vs_check();
-  if (!r.ok){ $('#vsMsg').innerHTML = `<span class="bad">${r.error}</span>`; return; }
-  const cur = $('#sVsVoice').value;
-  $('#sVsVoice').innerHTML = r.voices.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
-  if ([...$('#sVsVoice').options].some(o => o.value === cur)) $('#sVsVoice').value = cur;
-  $('#vsMsg').innerHTML = `<span class="ok">✔ מחובר. נמצאו ${r.voices.length} קולות.</span>`;
-};
-$('#vsInstall').onclick = async () => {
-  const b = $('#vsInstall'); b.disabled = true;
-  $('#vsMsg').innerHTML = '<span>מוריד מ־GitHub… זה יכול לקחת כמה דקות</span>';
-  const r = await api().vs_install();
-  b.disabled = false;
-  if (!r.ok){ $('#vsMsg').innerHTML = `<span class="bad">${r.error}</span>`; return; }
-  $('#vsMsg').innerHTML = `<span class="ok">✔ ההתקנה נפתחה. אם מופיע מסך כחול: More info ← Run anyway. בסוף פתח את VoiceStudio ולחץ "חבר".</span>`;
-};
+$('#sEngine').onchange = showEngine;
 $('#testVoice').onclick = async () => { await save(true); api().test_voice(); };
 async function save(quiet){
   $('#saveMsg').innerHTML = '<span>מתחבר…</span>';
   const r = await api().save_settings({
     claude_key: $('#sClaude').value, voice: $('#sVoice').value,
-    tts_engine: $('#sEngine').value, vs_voice: $('#sVsVoice').value,
+    tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
     user_name: $('#sName').value, wake_threshold: $('#sSens').value
   });
   if (r.claude === 'ok') $('#saveMsg').innerHTML = '<span class="ok">✔ נשמר. המוח מחובר.</span>';
