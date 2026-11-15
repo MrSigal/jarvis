@@ -52,7 +52,10 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
 <header>
   <div class="logo">J.A.R.V.I.S</div>
   <div class="status" id="status"><i></i><span id="statusTxt">מתחבר…</span></div>
-  <button class="iconbtn" id="voiceBtn" title="קול">🔊</button>
+  <div style="display:flex;gap:8px">
+    <button class="iconbtn" id="lockBtn" title="נעילה עם Face ID">🔓</button>
+    <button class="iconbtn" id="voiceBtn" title="קול">🔊</button>
+  </div>
 </header>
 <div class="core"><canvas id="cv"></canvas></div>
 <div id="state">בהמתנה</div>
@@ -64,6 +67,12 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
   <button class="round" type="submit" title="שלח"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12H4M10 6l-6 6 6 6"/></svg></button>
 </form>
 
+<div id="lock" style="position:fixed;inset:0;background:var(--bg);display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;z-index:20;text-align:center;padding:30px">
+  <div style="font-size:54px">🔒</div>
+  <h2 style="color:var(--c);font-size:22px">ג'רוויס נעול</h2>
+  <button id="unlockBtn" style="height:50px;padding:0 28px;border-radius:25px;border:1px solid var(--c);background:rgba(63,217,255,.12);color:var(--c);font:inherit;font-size:17px">פתח עם Face ID</button>
+  <div id="lockErr" style="color:var(--red);font-size:14px;min-height:18px"></div>
+</div>
 <div id="pair">
   <h2>חיבור לג'רוויס</h2>
   <p>האפליקציה מתחברת לג'רוויס שרץ על המחשב שלך.</p>
@@ -161,6 +170,7 @@ function listen(){
     if (d.event && d.event !== 'message') return;
     let m; try { m = await open_(d.message); } catch(e){ return; }
     if (m.type === 'pong'){ lastPong = Date.now(); setStatus(true); return; }
+    if (m.type === 'notify'){ if (Date.now() / 1000 - (m.ts || 0) < 600) add('j', m.text); return; }
     if (m.type === 'answer'){
       setStatus(true);
       const el = pending[m.id]; delete pending[m.id];
@@ -289,8 +299,48 @@ $('#form').onsubmit = e => { e.preventDefault(); const t = $('#inp').value; $('#
   })(last);
 })();
 
-// ---------- start
-if (SECRET) initCrypto().then(() => { listen(); ping(); setInterval(ping, 60000); add('sys', 'שלום! לחץ פעם אחת על המיקרופון ופשוט דבר — אני אקשיב עד שתלחץ שוב.'); });
+// ---------- Face ID lock: only you can open the app on this phone
+const rnd = n => crypto.getRandomValues(new Uint8Array(n));
+let lockId = store.get('jarvis_lock', '');
+function lockUI(){ $('#lockBtn').textContent = lockId ? '🔒' : '🔓'; }
+async function faceId(){
+  await navigator.credentials.get({publicKey: {challenge: rnd(32), rpId: location.hostname, userVerification: 'required',
+    allowCredentials: [{type: 'public-key', id: unb64(lockId)}], timeout: 60000}});
+}
+$('#lockBtn').onclick = async () => {
+  if (!window.PublicKeyCredential) { add('sys', 'הטלפון הזה לא תומך בנעילה עם Face ID.'); return; }
+  try {
+    if (!lockId) {
+      const c = await navigator.credentials.create({publicKey: {challenge: rnd(32), rp: {name: 'JARVIS', id: location.hostname},
+        user: {id: rnd(16), name: 'jarvis', displayName: "ג'רוויס"},
+        pubKeyCredParams: [{type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}],
+        authenticatorSelection: {authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred'}, timeout: 60000}});
+      lockId = b64(new Uint8Array(c.rawId)); store.set('jarvis_lock', lockId);
+      add('sys', '🔒 נעילה הופעלה. מעכשיו האפליקציה תיפתח רק עם Face ID.');
+    } else {
+      await faceId(); lockId = ''; store.set('jarvis_lock', ''); add('sys', '🔓 הנעילה בוטלה.');
+    }
+  } catch(e){ add('sys', 'הפעולה בוטלה.'); }
+  lockUI();
+};
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) hiddenAt = Date.now();
+  else if (lockId && hiddenAt && Date.now() - hiddenAt > 3 * 60 * 1000) { $('#lock').style.display = 'flex'; if (handsFree) setHandsFree(false); }
+});
+$('#unlockBtn').onclick = async () => {
+  try { await faceId(); $('#lock').style.display = 'none'; $('#lockErr').textContent = ''; start(); }
+  catch(e){ $('#lockErr').textContent = 'לא אומת. נסה שוב.'; }
+};
+lockUI();
+
+// ---------- start (only after unlocking)
+let started = false;
+function start(){
+  if (started || !SECRET) return; started = true;
+  initCrypto().then(() => { listen(); ping(); setInterval(ping, 60000); add('sys', 'שלום! לחץ פעם אחת על המיקרופון ופשוט דבר — אני אקשיב עד שתלחץ שוב.'); });
+}
+if (lockId && SECRET) $('#lock').style.display = 'flex'; else start();
 $('#pairBtn').onclick = () => {
   const k = keyFrom($('#pairCode').value);
   if (!k) { $('#pairErr').textContent = 'הקוד לא נראה נכון. העתק אותו שוב מההגדרות במחשב.'; return; }

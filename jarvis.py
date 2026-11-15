@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "4.6"
+VERSION = "4.7"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -69,20 +69,13 @@ DEFAULT_CONFIG = {
     "stt_engine": "google",                 # google | groq (Whisper)
     "claude_model": "claude-haiku-5-5",   # cheapest Claude model
     "voice": "he-IL-AvriNeural",            # free Hebrew male voice (female: he-IL-HilaNeural)
-    "whatsapp_provider": "greenapi",        # greenapi (sends from YOUR WhatsApp) | callmebot
-    "greenapi_url": "https://api.green-api.com",
-    "greenapi_id": "",
-    "greenapi_token": "",
-    "whatsapp_phone": "",                   # +972...
-    "whatsapp_apikey": "",
     "phone_secret": "",                     # pairing code for the iPhone app (created automatically)
     "phone_link": True,
     "mail_address": "",                     # Gmail address (IMAP)
     "mail_app_password": "",                # Google app password (myaccount.google.com/apppasswords)
     "mail_imap_host": "",                   # empty = detected from the address
-    "mail_alerts": True,                    # important new emails -> WhatsApp
+    "mail_alerts": True,                    # important new emails -> Windows notification + phone app
     "mail_check_minutes": 3,
-    "whatsapp_when_away": True,             # reminders/timers also go to WhatsApp when you're away from the PC
     "away_minutes": 5,
     "run_in_background": True,              # closing the window keeps JARVIS listening (icon near the clock)
     "start_with_windows": True,             # start hidden when the PC starts
@@ -99,11 +92,62 @@ DEFAULT_CONFIG = {
 }
 
 
+SECRET_KEYS = ("anthropic_api_key", "groq_api_key", "gemini_api_key", "mail_app_password", "phone_secret")
+
+
+def _dpapi(data, protect):
+    """Windows DPAPI: data can only be decrypted by the same Windows user on the same PC."""
+    import ctypes
+    from ctypes import wintypes
+
+    class BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+    buf = ctypes.create_string_buffer(data, len(data))
+    inp = BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+    out = BLOB()
+    crypt32 = ctypes.windll.crypt32
+    if protect:
+        ok = crypt32.CryptProtectData(ctypes.byref(inp), ctypes.c_wchar_p("JARVIS"), None, None, None, 0x1,
+                                      ctypes.byref(out))
+    else:
+        ok = crypt32.CryptUnprotectData(ctypes.byref(inp), None, None, None, None, 0x1, ctypes.byref(out))
+    if not ok:
+        raise OSError("DPAPI failed")
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(out.pbData)
+
+
+def protect_secret(value):
+    if OS != "Windows" or not value or str(value).startswith("dpapi:"):
+        return value
+    import base64
+    try:
+        return "dpapi:" + base64.b64encode(_dpapi(str(value).encode("utf-8"), True)).decode()
+    except Exception as e:
+        log.warning(f"could not protect a secret: {e}")
+        return value
+
+
+def unprotect_secret(value):
+    if not isinstance(value, str) or not value.startswith("dpapi:"):
+        return value
+    import base64
+    try:
+        return _dpapi(base64.b64decode(value[6:]), False).decode("utf-8")
+    except Exception as e:
+        log.error(f"could not decrypt a saved key (different Windows user?): {e}")
+        return ""
+
+
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
     if CONFIG_FILE.exists():
         try:
             cfg.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
+            for k in SECRET_KEYS:
+                cfg[k] = unprotect_secret(cfg.get(k, ""))
         except Exception as e:
             log.error(f"config.json unreadable: {e}")
     for old in ("elevenlabs_api_key", "elevenlabs_voice_id", "elevenlabs_voice_name",
@@ -111,6 +155,9 @@ def load_config():
         cfg.pop(old, None)                                  # ElevenLabs was removed
     if "fallback_voice" in cfg:
         cfg["voice"] = cfg.pop("fallback_voice")
+    for old in ("whatsapp_provider", "greenapi_url", "greenapi_id", "greenapi_token", "whatsapp_phone",
+                "whatsapp_apikey", "whatsapp_when_away"):
+        cfg.pop(old, None)                                  # v4.7: WhatsApp disconnected, credentials deleted
     for old in ("vs_url", "vs_model", "vs_voice"):
         cfg.pop(old, None)                                  # VoiceStudio was removed
     if cfg.get("tts_engine") not in ("edge", "gemini"):
@@ -132,7 +179,12 @@ def load_config():
 
 
 def save_config():
-    CONFIG_FILE.write_text(json.dumps(CFG, ensure_ascii=False, indent=2), encoding="utf-8")
+    data = dict(CFG)
+    for k in SECRET_KEYS:
+        data[k] = protect_secret(data.get(k, ""))
+    tmp = CONFIG_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, CONFIG_FILE)
 
 
 CFG = load_config()
@@ -1063,47 +1115,23 @@ def get_datetime():
             "date": f"יום {HE_DAYS[n.weekday()]}, {n.day} ב{HE_MONTHS[n.month - 1]} {n.year}"}
 
 
-# ======================================================================= PHONE (WhatsApp via CallMeBot)
-def send_whatsapp_greenapi(text):
-    """Send from the user's own WhatsApp (linked to GREEN-API by QR, like WhatsApp Web) to their own number."""
-    import httpx
-    phone = "".join(ch for ch in CFG.get("whatsapp_phone", "") if ch.isdigit())
-    iid, tok = CFG.get("greenapi_id", "").strip(), CFG.get("greenapi_token", "").strip()
-    if not (phone and iid and tok):
-        return {"ok": False, "error": "וואטסאפ לא מחובר. צריך מספר, IdInstance ו־ApiToken בהגדרות."}
-    base = (CFG.get("greenapi_url") or "https://api.green-api.com").rstrip("/")
-    try:
-        r = httpx.post(f"{base}/waInstance{iid}/sendMessage/{tok}",
-                       json={"chatId": f"{phone}@c.us", "message": f"🤖 JARVIS: {text}"}, timeout=30)
-        if r.status_code == 200 and "idMessage" in r.text:
-            return {"ok": True, "sent": True}
-        if r.status_code in (401, 403):
-            return {"ok": False, "error": "GREEN-API דחה את הפרטים. בדוק IdInstance ו־ApiToken."}
-        if r.status_code == 466 or "quota" in r.text.lower():
-            return {"ok": False, "error": "GREEN-API: עברת את מגבלת החבילה החינמית (3 שיחות בחודש)."}
-        return {"ok": False, "error": f"GREEN-API {r.status_code}: {r.text[:150]}"}
-    except Exception as e:
-        return {"ok": False, "error": f"לא הצלחתי לשלוח לוואטסאפ: {e}"}
+# ======================================================================= NOTIFICATIONS (Windows + iPhone app)
+TRAY = None
 
 
-def send_whatsapp(text):
-    import httpx
-    if CFG.get("whatsapp_provider", "greenapi") == "greenapi":
-        return send_whatsapp_greenapi(text)
-    phone, key = CFG.get("whatsapp_phone", "").strip(), CFG.get("whatsapp_apikey", "").strip()
-    if not phone or not key:
-        return {"ok": False, "error": "וואטסאפ לא מחובר. צריך להגדיר מספר ומפתח בהגדרות."}
+def notify(text, title="J.A.R.V.I.S"):
+    """Silent notification: a Windows notification near the clock, and the iPhone app if it is open."""
     try:
-        r = httpx.get("https://api.callmebot.com/whatsapp.php",
-                      params={"phone": phone, "text": f"🤖 JARVIS: {text}", "apikey": key}, timeout=30)
-        body = r.text.lower()
-        if r.status_code == 200 and ("queued" in body or "sent" in body) and "error" not in body:
-            return {"ok": True, "sent": True}
-        import re as _re
-        reason = _re.sub(r"<[^>]+>", " ", r.text)
-        return {"ok": False, "error": "CallMeBot: " + " ".join(reason.split())[:160]}
+        if TRAY:
+            TRAY.notify(text[:250], title)
     except Exception as e:
-        return {"ok": False, "error": f"לא הצלחתי לשלוח לוואטסאפ: {e}"}
+        log.warning(f"tray notify: {e}")
+    try:
+        PHONE.push({"type": "notify", "text": text[:1000]})
+    except Exception as e:
+        log.warning(f"phone notify: {e}")
+    ui.toast(text[:180])
+    return {"ok": True}
 
 
 def idle_seconds():
@@ -1142,7 +1170,7 @@ class Reminders:
         except Exception as e:
             log.error(f"reminders save: {e}")
 
-    def add(self, text, minutes=None, at=None, whatsapp=False):
+    def add(self, text, minutes=None, at=None, whatsapp=False):   # 'whatsapp' kept only so old saved items load
         now = datetime.now()
         if at:
             try:
@@ -1156,16 +1184,15 @@ class Reminders:
             due = now + __import__("datetime").timedelta(minutes=float(minutes))
         else:
             return {"ok": False, "error": "צריך זמן (minutes או at)"}
-        item = {"id": int(time.time() * 1000), "text": text, "due": due.isoformat(timespec="seconds"),
-                "whatsapp": bool(whatsapp)}
+        item = {"id": int(time.time() * 1000), "text": text, "due": due.isoformat(timespec="seconds")}
         with self.lock:
             self.items.append(item)
             self._save()
-        return {"ok": True, "due": due.strftime("%H:%M"), "date": due.strftime("%d/%m"), "whatsapp": bool(whatsapp)}
+        return {"ok": True, "due": due.strftime("%H:%M"), "date": due.strftime("%d/%m")}
 
     def list(self):
-        return {"reminders": [{"text": i["text"], "due": i["due"][11:16], "date": i["due"][8:10] + "/" + i["due"][5:7],
-                               "whatsapp": i["whatsapp"]} for i in sorted(self.items, key=lambda x: x["due"])]}
+        return {"reminders": [{"text": i["text"], "due": i["due"][11:16], "date": i["due"][8:10] + "/" + i["due"][5:7]}
+                              for i in sorted(self.items, key=lambda x: x["due"])]}
 
     def cancel(self, contains=""):
         with self.lock:
@@ -1184,8 +1211,7 @@ class Reminders:
                     self.items = [i for i in self.items if i["due"] > now]
                     self._save()
             for i in due:
-                self.events.put({"text": f"{CFG['user_name']}, תזכורת: {i['text']}", "whatsapp": i["whatsapp"],
-                                 "phone_text": f"תזכורת: {i['text']}"})
+                self.events.put({"text": f"{CFG['user_name']}, תזכורת: {i['text']}", "notify": f"⏰ תזכורת: {i['text']}"})
 
 
 # ======================================================================= EMAIL (IMAP)
@@ -1228,7 +1254,7 @@ def _mail_text(msg):
 
 
 class Mail:
-    """Reads the inbox (read-only) and alerts on WhatsApp about important new emails."""
+    """Reads the inbox (read-only) and notifies about important new emails (Windows + iPhone app)."""
     def __init__(self):
         try:
             self.seen = set(json.loads(MAIL_STATE_FILE.read_text(encoding="utf-8")).get("seen", []))
@@ -1296,9 +1322,9 @@ class Mail:
         return {"ok": True, "unread": [{"from": m["from"], "subject": m["subject"], "preview": m["text"][:200]} for m in mails]}
 
     def classify(self, mail):
-        """Ask the brain: is this worth a WhatsApp? Returns (important, hebrew_summary)."""
+        """Ask the brain: is this worth a notification? Returns (important, hebrew_summary)."""
         prompt = (
-            "You filter someone's new email and decide if it deserves an immediate WhatsApp alert.\n"
+            "You filter someone's new email and decide if it deserves an immediate notification.\n"
             "IMPORTANT: personal messages from real people expecting an answer, customers or business contacts, "
             "bills/payments due or failed, bank or account security alerts, government, appointments or deliveries "
             "happening soon, anything urgent.\n"
@@ -1356,8 +1382,7 @@ class Mail:
             log.info(f"mail {'IMPORTANT' if important else 'skip'}: {m['from']} | {m['subject']}")
             if important and CFG.get("mail_alerts", True):
                 sender = m["from"].split("<")[0].strip().strip('"') or m["from"]
-                r = send_whatsapp(f"📧 מייל חשוב מ־{sender}\n{summary}")
-                ui.action("מייל חשוב נשלח לוואטסאפ" if r.get("ok") else "✗ " + r.get("error", ""))
+                notify(f"📧 מייל חשוב מ־{sender}: {summary}")
                 sent += 1
         return sent
 
@@ -1422,11 +1447,33 @@ class PhoneLink:
 
     def reply(self, obj):
         import httpx
+        obj.setdefault("ts", time.time())
         httpx.post(f"https://ntfy.sh/{self.topic}-r", content=self.seal(obj), timeout=20)
 
+    def push(self, obj):
+        """Notification to the iPhone app (shown if the app is open)."""
+        if CFG.get("phone_link", True):
+            threading.Thread(target=lambda: self._safe(self.reply, obj), daemon=True).start()
+
+    @staticmethod
+    def _safe(fn, *a):
+        try:
+            fn(*a)
+        except Exception as e:
+            log.warning(f"phone push: {e}")
+
     def handle(self, m):
-        if time.time() - float(m.get("ts", 0)) > 180:
-            return                                   # stale message (e.g. replayed after a reconnect)
+        now = time.time()
+        ts = float(m.get("ts", 0) or 0)
+        if not (now - 120 <= ts <= now + 60):
+            return                                   # too old or from the future: ignore
+        key = f"{m.get('type')}:{m.get('id')}:{ts}"
+        seen = self.__dict__.setdefault("_seen", {})
+        if key in seen:
+            return                                   # the same encrypted message sent again (replay)
+        seen[key] = now
+        for k in [k for k, t in seen.items() if now - t > 300]:
+            del seen[k]
         if m.get("type") == "ping":
             self.reply({"type": "pong", "version": VERSION})
         elif m.get("type") == "ask" and self.answer:
@@ -1509,7 +1556,7 @@ class Timers:
         if not 0 < seconds <= 86400:
             return {"ok": False, "error": "invalid duration"}
         msg = f"{CFG['user_name']}, הטיימר{(' של ' + label) if label else ''} הסתיים."
-        threading.Timer(seconds, lambda: self.events.put({"text": msg, "whatsapp": False, "phone_text": msg})).start()
+        threading.Timer(seconds, lambda: self.events.put({"text": msg, "notify": "⏱ " + msg})).start()
         return {"ok": True, "seconds": seconds}
 
 
@@ -1548,9 +1595,8 @@ TOOLS += [
     _t("remember", "Save a fact about the user for the future (name, family, preferences, important dates...) when they ask you to remember something or tell you something clearly worth remembering.", {"fact": S}, ["fact"]),
     _t("forget", "Delete remembered facts that contain the given words.", {"contains": S}, ["contains"]),
     _t("check_email", "Read the user's new unread emails (sender, subject, preview) - for 'do I have new mail?' or 'what did X write?'. Summarize briefly in Hebrew.", {"limit": {"type": "number"}}),
-    _t("send_whatsapp", "Send a WhatsApp message to the user's own phone. Use ONLY when the user asks to send/notify something to their phone or WhatsApp.", {"message": S}, ["message"]),
-    _t("set_reminder", "Set a reminder the user asked for. Give minutes from now OR a clock time 'HH:MM'. Set whatsapp=true if the user wants it on their phone/WhatsApp.",
-       {"text": S, "minutes": {"type": "number"}, "at": S, "whatsapp": {"type": "boolean"}}, ["text"]),
+    _t("set_reminder", "Set a reminder the user asked for. Give minutes from now OR a clock time 'HH:MM'. It is spoken on the PC and shown as a notification on the PC and in the iPhone app.",
+       {"text": S, "minutes": {"type": "number"}, "at": S}, ["text"]),
     _t("list_reminders", "List the user's upcoming reminders."),
     _t("cancel_reminders", "Cancel reminders whose text contains the given words (empty = cancel all).", {"contains": S}),
     _t("web_search", "Search the internet. Use for news, facts, prices, sports, people, anything current. Returns titles, snippets and URLs.", {"query": S}, ["query"]),
@@ -1567,7 +1613,7 @@ ACTION_LABELS = {
     "get_datetime": "בודק שעה", "system_info": "אבחון מערכת", "power": "חשמל: {action}",
     "run_powershell": "פקודה: {command}", "web_search": "חיפוש ברשת: {query}",
     "read_webpage": "קורא דף: {url}", "get_weather": "מזג אוויר: {city}",
-    "send_whatsapp": "שולח לוואטסאפ", "check_email": "בודק מיילים", "remember": "זוכר: {fact}", "forget": "שוכח: {contains}", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
+    "check_email": "בודק מיילים", "remember": "זוכר: {fact}", "forget": "שוכח: {contains}", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
     "cancel_reminders": "מבטל תזכורות",
 }
 
@@ -1595,7 +1641,7 @@ Rules:
 - Music/videos: when the user wants to hear or watch something ("תנגן", "תשים", "אני רוצה לשמוע"), call play_youtube - it starts playing. Then say briefly what is playing.
 - Memory: when the user tells you something worth remembering about them, or asks you to remember, call remember.
 - Anything Google or web (Google search, YouTube, Gmail, Google Maps, Drive, Translate, any site) opens in Google Chrome: use google_search / youtube_search / open_website (e.g. Gmail -> https://mail.google.com, Maps -> https://www.google.com/maps/search/<place>). Don't open another browser.
-- Phone: you can send WhatsApp messages to the user's phone (send_whatsapp) and set reminders (set_reminder, with whatsapp=true when they want it on the phone). Only when they ask.
+- Reminders: set_reminder (only when asked). You have no WhatsApp or SMS access.
 - You only understand Hebrew. If the message is not in Hebrew, or is clearly garbled speech-recognition noise / background chatter not addressed to you, reply with exactly [IGNORE] and nothing else."""
 
 
@@ -1636,10 +1682,9 @@ class Brain:
             "get_datetime": get_datetime, "system_info": system_info,
             "power": lambda: power(a["action"]), "run_powershell": lambda: run_powershell(a["command"]),
             "web_search": lambda: web_search(a["query"]), "read_webpage": lambda: read_webpage(a["url"]),
-            "send_whatsapp": lambda: send_whatsapp(a["message"]),
             "check_email": lambda: MAIL.summary_for_voice(int(a.get("limit") or 8)),
             "remember": lambda: MEMORY.remember(a["fact"]), "forget": lambda: MEMORY.forget(a["contains"]),
-            "set_reminder": lambda: REMINDERS.add(a["text"], a.get("minutes"), a.get("at"), a.get("whatsapp", False)),
+            "set_reminder": lambda: REMINDERS.add(a["text"], a.get("minutes"), a.get("at")),
             "list_reminders": lambda: REMINDERS.list(),
             "cancel_reminders": lambda: REMINDERS.cancel(a.get("contains", "")),
             "get_weather": lambda: get_weather(a.get("city", "")),
@@ -1988,12 +2033,9 @@ class Assistant:
         while True:
             ev = self.timers.events.get()
             if isinstance(ev, str):
-                ev = {"text": ev, "whatsapp": False, "phone_text": ev}
-            wa_ready = CFG.get("greenapi_token") if CFG.get("whatsapp_provider", "greenapi") == "greenapi" else CFG.get("whatsapp_apikey")
-            to_phone = ev.get("whatsapp") or (CFG.get("whatsapp_when_away") and wa_ready and user_away())
-            if to_phone:
-                r = send_whatsapp(ev.get("phone_text") or ev["text"])
-                ui.action("נשלח לוואטסאפ" if r.get("ok") else "✗ " + r.get("error", ""))
+                ev = {"text": ev}
+            if ev.get("notify"):
+                notify(ev["notify"])
             popped = not getattr(ui, "visible", True) and ui.show_window()
             if self.speaker:
                 self.speaker.say(ev["text"])
@@ -2238,11 +2280,6 @@ class Api:
             "auto_hide": bool(CFG.get("auto_hide", True)),
             "mail_address": CFG.get("mail_address", ""), "has_mail_pw": bool(CFG.get("mail_app_password")),
             "mail_alerts": bool(CFG.get("mail_alerts", True)),
-            "wa_provider": CFG.get("whatsapp_provider", "greenapi"), "ga_url": CFG.get("greenapi_url", ""),
-            "ga_id": CFG.get("greenapi_id", ""), "has_ga": bool(CFG.get("greenapi_token")),
-            "ga_mask": _mask(CFG.get("greenapi_token", "")),
-            "wa_phone": CFG.get("whatsapp_phone", ""), "has_wa": bool(CFG.get("whatsapp_apikey")),
-            "wa_mask": _mask(CFG.get("whatsapp_apikey", "")), "wa_away": bool(CFG.get("whatsapp_when_away", True)),
             "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
             "has_gemini": bool(CFG.get("gemini_api_key")), "gemini_mask": _mask(CFG.get("gemini_api_key", "")),
             "gemini_voice": CFG.get("gemini_voice", "Charon"),
@@ -2261,32 +2298,6 @@ class Api:
                 CFG[k_cfg] = bool(s[k_ui])
         if "autostart" in s:
             threading.Thread(target=set_start_with_windows, args=(bool(s["autostart"]),), daemon=True).start()
-        if "wa_phone" in s:
-            ph = "".join(ch for ch in str(s["wa_phone"]) if ch.isdigit() or ch == "+")
-            if ph.startswith("0"):
-                ph = "+972" + ph[1:]                     # Israeli local number -> international
-            if ph and not ph.startswith("+"):
-                ph = "+" + ph
-            CFG["whatsapp_phone"] = ph
-        if "mail_address" in s:
-            CFG["mail_address"] = s["mail_address"].strip()
-        if s.get("mail_pw", "").strip():
-            CFG["mail_app_password"] = s["mail_pw"].replace(" ", "").strip()
-        if "mail_alerts" in s:
-            CFG["mail_alerts"] = bool(s["mail_alerts"])
-        if s.get("wa_provider") in ("greenapi", "callmebot"):
-            CFG["whatsapp_provider"] = s["wa_provider"]
-        if s.get("ga_id", "").strip():
-            CFG["greenapi_id"] = "".join(ch for ch in s["ga_id"] if ch.isdigit())
-        if s.get("ga_token", "").strip():
-            CFG["greenapi_token"] = s["ga_token"].strip()
-        if s.get("ga_url", "").strip():
-            u = s["ga_url"].strip().rstrip("/")
-            CFG["greenapi_url"] = u if u.startswith("http") else "https://" + u
-        if s.get("wa_key", "").strip():
-            CFG["whatsapp_apikey"] = s["wa_key"].strip()
-        if "wa_away" in s:
-            CFG["whatsapp_when_away"] = bool(s["wa_away"])
         if s.get("groq_key", "").strip():
             CFG["groq_api_key"] = s["groq_key"].strip()
         if s.get("brain_engine") in ("claude", "groq"):
@@ -2334,8 +2345,6 @@ class Api:
             log.error(f"qr: {e}")
         return {"url": PHONE.pair_url(), "qr": qr, "code": CFG["phone_secret"]}
 
-    def phone_send_link(self):
-        return send_whatsapp("הקישור לאפליקציית ג'רוויס באייפון (פתח בספארי ואז 'הוסף למסך הבית'):\n" + PHONE.pair_url())
 
     def copy_text(self, text):
         try:
@@ -2358,9 +2367,6 @@ class Api:
             if "AUTHENTICATIONFAILED" in msg.upper() or "invalid credentials" in msg.lower():
                 msg = "גוגל דחה את הסיסמה. צריך סיסמת אפליקציה (16 אותיות), לא הסיסמה הרגילה."
             return {"ok": False, "error": msg[:200]}
-
-    def wa_test(self):
-        return send_whatsapp("בדיקה - ג'רוויס מחובר לוואטסאפ שלך ✔")
 
     def send_text(self, text):
         if text and text.strip():
@@ -2446,6 +2452,8 @@ def start_tray():
                             menu=pystray.Menu(pystray.MenuItem("פתח את ג'רוויס", open_, default=True),
                                               pystray.MenuItem("יציאה", quit_)))
         icon.run_detached()
+        global TRAY
+        TRAY = icon
         return icon
     except Exception as e:
         log.warning(f"tray icon unavailable: {e}")
@@ -2560,6 +2568,8 @@ def selftest():
         import speech_recognition as sr
         sr.AudioData(np.zeros(16000, dtype=np.int16).tobytes(), SAMPLE_RATE, 2).get_flac_data()
     step("flac encoder (Google speech)", flac)
+    if OS == "Windows":
+        step("DPAPI key protection", lambda: (unprotect_secret(protect_secret("test-key-123")) == "test-key-123") or (_ for _ in ()).throw(RuntimeError("round-trip mismatch")))
     step("config dir writable", lambda: (DATA_DIR / "selftest.tmp").write_text("x") or (DATA_DIR / "selftest.tmp").unlink())
     lines.append(f"VERSION {VERSION}  FROZEN {FROZEN}  RESULT {'PASS' if ok else 'FAIL'}")
     out.write_text("\n".join(lines), encoding="utf-8")

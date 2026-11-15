@@ -361,42 +361,11 @@ body.gl .reactor .glow{opacity:.18}
     </div>
 
     <div class="field">
-      <label>3 · וואטסאפ (לא חובה)</label>
-      <div class="row" style="margin-bottom:8px">
-        <select id="sWaProv">
-          <option value="greenapi">מהוואטסאפ שלי (GREEN-API) — מומלץ</option>
-          <option value="callmebot">דרך בוט (CallMeBot)</option>
-        </select>
-      </div>
-      <input id="sWaPhone" placeholder="המספר שלך, לדוגמה 0501234567" dir="ltr" style="margin-bottom:8px">
-      <div id="gaRow">
-        <div class="help">פעם אחת: נרשמים בחינם ב־<a data-link="https://console.green-api.com">console.green-api.com</a> ← יוצרים Instance בחבילה החינמית (Developer) ← לוחצים על <b>Scan QR</b> וסורקים מהטלפון (וואטסאפ ← מכשירים מקושרים ← קישור מכשיר) ← מעתיקים לכאן את <b>apiUrl</b>, <b>idInstance</b> ו־<b>apiTokenInstance</b>.</div>
-        <input id="sGaUrl" placeholder="apiUrl, לדוגמה https://7105.api.greenapi.com" dir="ltr" style="margin-bottom:8px">
-        <div class="row" style="margin-bottom:8px">
-          <input id="sGaId" placeholder="idInstance" dir="ltr">
-          <input id="sGaTok" type="password" placeholder="apiTokenInstance" dir="ltr">
-        </div>
-      </div>
-      <div id="cmbRow" style="display:none">
-        <div class="help">שומרים באנשי הקשר את המספר של CallMeBot (המספר המעודכן מופיע ב־<a data-link="https://www.callmebot.com/blog/free-api-whatsapp-messages/">האתר שלהם</a>), שולחים לו <b dir="ltr">I allow callmebot to send me messages</b>, ומדביקים כאן את המפתח שהוא מחזיר.</div>
-        <input id="sWaKey" type="password" placeholder="המפתח (APIKEY)" dir="ltr" style="margin-bottom:8px">
-      </div>
-      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer">
-        <input type="checkbox" id="sWaAway" style="width:auto;height:auto"> כשאני לא ליד המחשב, תשלח תזכורות וטיימרים גם לוואטסאפ
-      </label>
-      <div class="row" style="margin-top:8px">
-        <div id="waMsg" style="font-size:14px;align-self:center"></div>
-        <button class="btn ghost" id="waTest" style="flex:0 0 auto">שלח בדיקה</button>
-      </div>
-    </div>
-
-    <div class="field">
       <label>אייפון</label>
       <div class="help">מדברים עם ג'רוויס מהטלפון, גם כשלא בבית. סורקים את הקוד עם המצלמה של האייפון, פותחים את הקישור בספארי, ואז שיתוף <b>⬆︎</b> ← <b>"הוסף למסך הבית"</b>. החיבור מוצפן, ורק טלפון שסרק את הקוד יכול לדבר עם ג'רוויס.</div>
       <div style="display:flex;gap:14px;align-items:center">
         <img id="phoneQr" alt="" style="width:150px;height:150px;background:#fff;border-radius:6px">
         <div style="display:flex;flex-direction:column;gap:8px">
-          <button class="btn ghost" id="phoneWa" style="flex:0 0 auto">שלח קישור לוואטסאפ</button>
           <button class="btn ghost" id="phoneCopy" style="flex:0 0 auto">העתק קישור</button>
           <button class="btn ghost" id="phoneNew" style="flex:0 0 auto" title="מנתק טלפונים שכבר חוברו">צור קוד חדש</button>
           <div id="phoneMsg" style="font-size:13px"></div>
@@ -407,12 +376,12 @@ body.gl .reactor .glow{opacity:.18}
 
     <div class="field">
       <label>מייל (לא חובה)</label>
-      <div class="help">ג'רוויס בודק כל כמה דקות מיילים חדשים, ועל מה שחשוב באמת שולח לך וואטסאפ. הוא רק קורא, לא מוחק ולא שולח מיילים. בג'ימייל צריך <b>סיסמת אפליקציה</b>, לא הסיסמה הרגילה: <a data-link="https://myaccount.google.com/apppasswords">myaccount.google.com/apppasswords</a> ← כותבים שם JARVIS ← יצירה ← מעתיקים את 16 האותיות. אם הדף לא נפתח, צריך קודם להפעיל אימות דו־שלבי בחשבון.</div>
+      <div class="help">ג'רוויס בודק כל כמה דקות מיילים חדשים, ועל מה שחשוב באמת מקפיץ לך התראה. הוא רק קורא, לא מוחק ולא שולח מיילים. בג'ימייל צריך <b>סיסמת אפליקציה</b>, לא הסיסמה הרגילה: <a data-link="https://myaccount.google.com/apppasswords">myaccount.google.com/apppasswords</a> ← כותבים שם JARVIS ← יצירה ← מעתיקים את 16 האותיות. אם הדף לא נפתח, צריך קודם להפעיל אימות דו־שלבי בחשבון.</div>
       <div class="row" style="margin-bottom:6px">
         <input id="sMail" placeholder="you@gmail.com" dir="ltr">
         <input id="sMailPw" type="password" placeholder="סיסמת אפליקציה" dir="ltr">
       </div>
-      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin:6px 0"><input type="checkbox" id="sMailAlerts" style="width:auto;height:auto"> לשלוח לי וואטסאפ כשמגיע מייל חשוב</label>
+      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin:6px 0"><input type="checkbox" id="sMailAlerts" style="width:auto;height:auto"> להציג לי התראה (במחשב ובאייפון) כשמגיע מייל חשוב</label>
       <div class="row">
         <div id="mailMsg" style="font-size:14px;align-self:center"></div>
         <button class="btn ghost" id="mailTest" style="flex:0 0 auto">בדוק חיבור</button>
@@ -562,14 +531,6 @@ function openSettings(cfg){
   $('#sMailAlerts').checked = cfg.mail_alerts !== false; $('#mailMsg').textContent = '';
   $('#sPause').value = cfg.pause || 1.4; $('#pauseVal').textContent = cfg.pause || 1.4;
   $('#sBg').checked = cfg.bg !== false; $('#sAuto').checked = cfg.autostart !== false; $('#sHide').checked = cfg.auto_hide !== false;
-  $('#sWaProv').value = cfg.wa_provider || 'greenapi'; showWa();
-  $('#sGaUrl').value = cfg.ga_url && cfg.ga_url !== 'https://api.green-api.com' ? cfg.ga_url : '';
-  $('#sGaId').value = cfg.ga_id || '';
-  $('#sGaTok').value = ''; $('#sGaTok').placeholder = cfg.has_ga ? 'שמור ' + cfg.ga_mask : 'apiTokenInstance';
-  $('#sWaPhone').value = cfg.wa_phone || '';
-  $('#sWaKey').value = ''; $('#sWaKey').placeholder = cfg.has_wa ? 'שמור ' + cfg.wa_mask : 'המפתח (APIKEY)';
-  $('#sWaAway').checked = cfg.wa_away !== false;
-  $('#waMsg').textContent = '';
   $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'שמור ' + cfg.claude_mask + ' (השאר ריק כדי לא לשנות)' : 'sk-ant-…';
   if (cfg.voice) $('#sVoice').value = cfg.voice;
   $('#sEngine').value = cfg.tts_engine || 'edge';
@@ -598,26 +559,13 @@ function showEngine(){
   $('#vsMsg').textContent = '';
 }
 $('#sEngine').onchange = showEngine;
-function showWa(){
-  const g = $('#sWaProv').value === 'greenapi';
-  $('#gaRow').style.display = g ? 'block' : 'none';
-  $('#cmbRow').style.display = g ? 'none' : 'block';
-}
-$('#sWaProv').onchange = showWa;
 $('#phoneCopy').onclick = async () => { const ok = await api().copy_text($('#phoneQr').dataset.url || ''); $('#phoneMsg').innerHTML = ok ? '<span class="ok">הקישור הועתק</span>' : ''; };
-$('#phoneWa').onclick = async () => { $('#phoneMsg').textContent = 'שולח…'; const r = await api().phone_send_link(); $('#phoneMsg').innerHTML = r.ok ? '<span class="ok">נשלח! פתח את הקישור בוואטסאפ באייפון.</span>' : `<span class="bad">${r.error}</span>`; };
 $('#phoneNew').onclick = async () => { const p = await api().phone_pair(true); $('#phoneQr').src = p.qr; $('#phoneQr').dataset.url = p.url; $('#phoneCode').textContent = p.code; $('#phoneMsg').innerHTML = '<span class="ok">נוצר קוד חדש. טלפונים ישנים נותקו.</span>'; };
 $('#mailTest').onclick = async () => {
   await save(true);
   $('#mailMsg').innerHTML = '<span>מתחבר…</span>';
   const r = await api().mail_test();
   $('#mailMsg').innerHTML = r.ok ? `<span class="ok">✔ מחובר. ${r.count} מיילים שלא נקראו בתיבה הראשית.</span>` : `<span class="bad">${r.error}</span>`;
-};
-$('#waTest').onclick = async () => {
-  await save(true);
-  $('#waMsg').innerHTML = '<span>שולח…</span>';
-  const r = await api().wa_test();
-  $('#waMsg').innerHTML = r.ok ? '<span class="ok">✔ נשלח! בדוק את הוואטסאפ.</span>' : `<span class="bad">${r.error}</span>`;
 };
 $('#testVoice').onclick = async () => {
   await save(true);
@@ -631,8 +579,6 @@ async function save(quiet){
     claude_key: $('#sClaude').value, voice: $('#sVoice').value,
     mail_address: $('#sMail').value, mail_pw: $('#sMailPw').value, mail_alerts: $('#sMailAlerts').checked,
     pause: $('#sPause').value, bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked,
-    wa_provider: $('#sWaProv').value, ga_url: $('#sGaUrl').value, ga_id: $('#sGaId').value, ga_token: $('#sGaTok').value,
-    wa_phone: $('#sWaPhone').value, wa_key: $('#sWaKey').value, wa_away: $('#sWaAway').checked,
     brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
     user_name: $('#sName').value, wake_threshold: $('#sSens').value
