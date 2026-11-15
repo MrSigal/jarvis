@@ -362,10 +362,24 @@ body.gl .reactor .glow{opacity:.18}
 
     <div class="field">
       <label>3 · וואטסאפ (לא חובה)</label>
-      <div class="help">ככה ג'רוויס יכול לשלוח לך הודעות ותזכורות לטלפון. פעם אחת: שומרים באנשי הקשר את המספר של CallMeBot (המספר המעודכן מופיע ב־<a data-link="https://www.callmebot.com/blog/free-api-whatsapp-messages/">האתר שלהם</a>), שולחים לו בוואטסאפ <b dir="ltr">I allow callmebot to send me messages</b>, ומדביקים כאן את המפתח שהוא שולח בחזרה.</div>
       <div class="row" style="margin-bottom:8px">
-        <input id="sWaPhone" placeholder="המספר שלך, לדוגמה 0501234567" dir="ltr">
-        <input id="sWaKey" type="password" placeholder="המפתח (APIKEY)" dir="ltr">
+        <select id="sWaProv">
+          <option value="greenapi">מהוואטסאפ שלי (GREEN-API) — מומלץ</option>
+          <option value="callmebot">דרך בוט (CallMeBot)</option>
+        </select>
+      </div>
+      <input id="sWaPhone" placeholder="המספר שלך, לדוגמה 0501234567" dir="ltr" style="margin-bottom:8px">
+      <div id="gaRow">
+        <div class="help">פעם אחת: נרשמים בחינם ב־<a data-link="https://console.green-api.com">console.green-api.com</a> ← יוצרים Instance בחבילה החינמית (Developer) ← לוחצים על <b>Scan QR</b> וסורקים מהטלפון (וואטסאפ ← מכשירים מקושרים ← קישור מכשיר) ← מעתיקים לכאן את <b>apiUrl</b>, <b>idInstance</b> ו־<b>apiTokenInstance</b>.</div>
+        <input id="sGaUrl" placeholder="apiUrl, לדוגמה https://7105.api.greenapi.com" dir="ltr" style="margin-bottom:8px">
+        <div class="row" style="margin-bottom:8px">
+          <input id="sGaId" placeholder="idInstance" dir="ltr">
+          <input id="sGaTok" type="password" placeholder="apiTokenInstance" dir="ltr">
+        </div>
+      </div>
+      <div id="cmbRow" style="display:none">
+        <div class="help">שומרים באנשי הקשר את המספר של CallMeBot (המספר המעודכן מופיע ב־<a data-link="https://www.callmebot.com/blog/free-api-whatsapp-messages/">האתר שלהם</a>), שולחים לו <b dir="ltr">I allow callmebot to send me messages</b>, ומדביקים כאן את המפתח שהוא מחזיר.</div>
+        <input id="sWaKey" type="password" placeholder="המפתח (APIKEY)" dir="ltr" style="margin-bottom:8px">
       </div>
       <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer">
         <input type="checkbox" id="sWaAway" style="width:auto;height:auto"> כשאני לא ליד המחשב, תשלח תזכורות וטיימרים גם לוואטסאפ
@@ -374,6 +388,12 @@ body.gl .reactor .glow{opacity:.18}
         <div id="waMsg" style="font-size:14px;align-self:center"></div>
         <button class="btn ghost" id="waTest" style="flex:0 0 auto">שלח בדיקה</button>
       </div>
+    </div>
+
+    <div class="field">
+      <label>הפסקה באמצע משפט — <span id="pauseVal"></span> שניות</label>
+      <div class="help">כמה זמן ג'רוויס מחכה כשאתה עוצר לחשוב, לפני שהוא מבין שסיימת. אם הוא קוטע אותך, הזז ימינה.</div>
+      <input id="sPause" type="range" min="0.8" max="3" step="0.1" style="padding:0;height:auto;direction:ltr">
     </div>
 
     <div class="field">
@@ -458,8 +478,10 @@ window.hud = {
     document.body.classList.remove('idle', 'listening', 'thinking', 'speaking');
     document.body.classList.add(s);
     $('#stateLabel').textContent = LABELS[s] || s.toUpperCase();
-    $('#hint').textContent = HINTS[s] || '';
+    $('#hint').textContent = (this._convo && (s === 'idle' || s === 'listening'))
+      ? 'אפשר להמשיך לדבר בלי "היי ג\'רוויס" · אמור "זהו" לסיום' : (HINTS[s] || '');
   },
+  conversation(on){ this._convo = on; this.setState(document.body.classList.contains('listening') ? 'listening' : 'idle'); },
   addMessage(role, text){
     const el = role === 'user' ? $('#subUser') : $('#subJarvis');
     el.textContent = role === 'user' ? '"' + text + '"' : text;
@@ -504,7 +526,12 @@ function openSettings(cfg){
   $('#sGroq').value = ''; $('#sGroq').placeholder = cfg.has_groq ? 'שמור ' + cfg.groq_mask + ' (השאר ריק כדי לא לשנות)' : 'gsk_…';
   $('#sStt').value = cfg.stt_engine || 'google';
   showBrain();
+  $('#sPause').value = cfg.pause || 1.4; $('#pauseVal').textContent = cfg.pause || 1.4;
   $('#sBg').checked = cfg.bg !== false; $('#sAuto').checked = cfg.autostart !== false; $('#sHide').checked = cfg.auto_hide !== false;
+  $('#sWaProv').value = cfg.wa_provider || 'greenapi'; showWa();
+  $('#sGaUrl').value = cfg.ga_url && cfg.ga_url !== 'https://api.green-api.com' ? cfg.ga_url : '';
+  $('#sGaId').value = cfg.ga_id || '';
+  $('#sGaTok').value = ''; $('#sGaTok').placeholder = cfg.has_ga ? 'שמור ' + cfg.ga_mask : 'apiTokenInstance';
   $('#sWaPhone').value = cfg.wa_phone || '';
   $('#sWaKey').value = ''; $('#sWaKey').placeholder = cfg.has_wa ? 'שמור ' + cfg.wa_mask : 'המפתח (APIKEY)';
   $('#sWaAway').checked = cfg.wa_away !== false;
@@ -520,6 +547,7 @@ function openSettings(cfg){
   $('#saveMsg').textContent = '';
   $('#settings').classList.add('open');
 }
+$('#sPause').oninput = e => $('#pauseVal').textContent = e.target.value;
 $('#sSens').oninput = e => $('#sensVal').textContent = e.target.value;
 $('#openSettings').onclick = async () => openSettings(await api().get_settings());
 $('#closeSettings').onclick = () => $('#settings').classList.remove('open');
@@ -536,6 +564,12 @@ function showEngine(){
   $('#vsMsg').textContent = '';
 }
 $('#sEngine').onchange = showEngine;
+function showWa(){
+  const g = $('#sWaProv').value === 'greenapi';
+  $('#gaRow').style.display = g ? 'block' : 'none';
+  $('#cmbRow').style.display = g ? 'none' : 'block';
+}
+$('#sWaProv').onchange = showWa;
 $('#waTest').onclick = async () => {
   await save(true);
   $('#waMsg').innerHTML = '<span>שולח…</span>';
@@ -552,7 +586,8 @@ async function save(quiet){
   $('#saveMsg').innerHTML = '<span>מתחבר…</span>';
   const r = await api().save_settings({
     claude_key: $('#sClaude').value, voice: $('#sVoice').value,
-    bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked,
+    pause: $('#sPause').value, bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked,
+    wa_provider: $('#sWaProv').value, ga_url: $('#sGaUrl').value, ga_id: $('#sGaId').value, ga_token: $('#sGaTok').value,
     wa_phone: $('#sWaPhone').value, wa_key: $('#sWaKey').value, wa_away: $('#sWaAway').checked,
     brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,

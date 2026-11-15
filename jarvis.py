@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "4.2"
+VERSION = "4.3"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -44,6 +44,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = DATA_DIR / "config.json"
 LOG_FILE = DATA_DIR / "jarvis.log"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
+MEMORY_FILE = DATA_DIR / "memory.json"
 REMINDERS = None
 BACKGROUND_START = "--background" in sys.argv
 OS = platform.system()
@@ -67,7 +68,11 @@ DEFAULT_CONFIG = {
     "stt_engine": "google",                 # google | groq (Whisper)
     "claude_model": "claude-haiku-5-5",   # cheapest Claude model
     "voice": "he-IL-AvriNeural",            # free Hebrew male voice (female: he-IL-HilaNeural)
-    "whatsapp_phone": "",                   # +972...  (CallMeBot, free for personal use)
+    "whatsapp_provider": "greenapi",        # greenapi (sends from YOUR WhatsApp) | callmebot
+    "greenapi_url": "https://api.green-api.com",
+    "greenapi_id": "",
+    "greenapi_token": "",
+    "whatsapp_phone": "",                   # +972...
     "whatsapp_apikey": "",
     "whatsapp_when_away": True,             # reminders/timers also go to WhatsApp when you're away from the PC
     "away_minutes": 5,
@@ -80,7 +85,8 @@ DEFAULT_CONFIG = {
     "gemini_model": "",                     # remembered automatically once one works
     "user_name": "אדוני",
     "wake_threshold": 0.5,
-    "follow_up_seconds": 6,
+    "follow_up_seconds": 25,                # after "Hey Jarvis", keep talking without saying it again
+    "pause_seconds": 1.4,                   # how long a pause means "I finished talking" (bigger = never cuts you off)
     "min_confidence": 0.35,                  # speech below this confidence is ignored (non-English, noise)
 }
 
@@ -107,6 +113,8 @@ def load_config():
         cfg["user_name"] = "אדוני"
     if cfg.get("min_confidence", 0.35) > 0.35:
         cfg["min_confidence"] = 0.35                       # Hebrew gets lower confidence scores
+    if cfg.get("follow_up_seconds", 25) < 15:              # v4.3: conversation mode
+        cfg["follow_up_seconds"] = 25
     if cfg.get("claude_model") == "claude-sonnet-5-5":   # move old installs to the cheap model
         cfg["claude_model"] = "claude-haiku-5-5"
     return cfg
@@ -451,10 +459,12 @@ class Ears:
         except Exception:
             pass
 
-    def listen(self, start_timeout=6.0, max_seconds=15.0, silence_end=0.8):
+    def listen(self, start_timeout=6.0, max_seconds=40.0, silence_end=None):
         """Record one sentence. Starts only on real speech, keeps the first syllable, stops after a pause."""
         from collections import deque
         np = self.np
+        if silence_end is None:
+            silence_end = float(CFG.get("pause_seconds", 1.4))
         time.sleep(0.15)                     # let the beep / Jarvis's own voice die out
         self.flush()
         ui.state("listening")
@@ -889,6 +899,43 @@ def google_search(query):
     return {"ok": True}
 
 
+def play_youtube(query):
+    """Find the best YouTube match and open it playing (in Chrome)."""
+    import re
+    vid, title = None, ""
+    try:
+        import httpx
+        r = httpx.get("https://www.youtube.com/results", params={"search_query": query, "hl": "he"},
+                      headers={**UA, "Accept-Language": "he,en;q=0.8"}, cookies={"CONSENT": "YES+1"},
+                      timeout=15, follow_redirects=True)
+        m = re.search(r'"videoRenderer":\{"videoId":"([\w-]{11})".{0,1500}?"title":\{"runs":\[\{"text":"(.*?)"\}', r.text, re.S)
+        if m:
+            vid, title = m.group(1), m.group(2)
+        else:
+            m = re.search(r'"videoId":"([\w-]{11})"', r.text)
+            vid = m.group(1) if m else None
+    except Exception as e:
+        log.warning(f"youtube lookup failed: {e}")
+    if not vid:   # second chance through web search
+        try:
+            for res in (web_search(f"{query} site:youtube.com").get("results") or []):
+                m = re.search(r"(?:v=|youtu\.be/)([\w-]{11})", res.get("url") or "")
+                if m:
+                    vid, title = m.group(1), res.get("title", "")
+                    break
+        except Exception:
+            pass
+    if not vid:
+        youtube_search(query)
+        return {"ok": True, "played": False, "note": "opened search results"}
+    open_in_chrome(f"https://www.youtube.com/watch?v={vid}&autoplay=1")
+    try:
+        title = json.loads(f'"{title}"') if title else ""
+    except Exception:
+        pass
+    return {"ok": True, "played": True, "title": title}
+
+
 def youtube_search(query, play_first=False):
     open_in_chrome("https://www.youtube.com/results?search_query=" + urllib.parse.quote(query))
     return {"ok": True}
@@ -1006,8 +1053,32 @@ def get_datetime():
 
 
 # ======================================================================= PHONE (WhatsApp via CallMeBot)
+def send_whatsapp_greenapi(text):
+    """Send from the user's own WhatsApp (linked to GREEN-API by QR, like WhatsApp Web) to their own number."""
+    import httpx
+    phone = "".join(ch for ch in CFG.get("whatsapp_phone", "") if ch.isdigit())
+    iid, tok = CFG.get("greenapi_id", "").strip(), CFG.get("greenapi_token", "").strip()
+    if not (phone and iid and tok):
+        return {"ok": False, "error": "וואטסאפ לא מחובר. צריך מספר, IdInstance ו־ApiToken בהגדרות."}
+    base = (CFG.get("greenapi_url") or "https://api.green-api.com").rstrip("/")
+    try:
+        r = httpx.post(f"{base}/waInstance{iid}/sendMessage/{tok}",
+                       json={"chatId": f"{phone}@c.us", "message": f"🤖 JARVIS: {text}"}, timeout=30)
+        if r.status_code == 200 and "idMessage" in r.text:
+            return {"ok": True, "sent": True}
+        if r.status_code in (401, 403):
+            return {"ok": False, "error": "GREEN-API דחה את הפרטים. בדוק IdInstance ו־ApiToken."}
+        if r.status_code == 466 or "quota" in r.text.lower():
+            return {"ok": False, "error": "GREEN-API: עברת את מגבלת החבילה החינמית (3 שיחות בחודש)."}
+        return {"ok": False, "error": f"GREEN-API {r.status_code}: {r.text[:150]}"}
+    except Exception as e:
+        return {"ok": False, "error": f"לא הצלחתי לשלוח לוואטסאפ: {e}"}
+
+
 def send_whatsapp(text):
     import httpx
+    if CFG.get("whatsapp_provider", "greenapi") == "greenapi":
+        return send_whatsapp_greenapi(text)
     phone, key = CFG.get("whatsapp_phone", "").strip(), CFG.get("whatsapp_apikey", "").strip()
     if not phone or not key:
         return {"ok": False, "error": "וואטסאפ לא מחובר. צריך להגדיר מספר ומפתח בהגדרות."}
@@ -1106,6 +1177,35 @@ class Reminders:
                                  "phone_text": f"תזכורת: {i['text']}"})
 
 
+class Memory:
+    """Facts the user asked JARVIS to remember."""
+    def __init__(self):
+        try:
+            self.facts = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            self.facts = []
+
+    def save(self):
+        MEMORY_FILE.write_text(json.dumps(self.facts, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    def remember(self, fact):
+        fact = fact.strip()
+        if fact and fact not in self.facts:
+            self.facts.append(fact)
+            self.facts = self.facts[-60:]
+            self.save()
+        return {"ok": True, "remembered": fact}
+
+    def forget(self, contains):
+        before = len(self.facts)
+        self.facts = [f for f in self.facts if contains not in f]
+        self.save()
+        return {"ok": True, "forgot": before - len(self.facts)}
+
+
+MEMORY = Memory()
+
+
 class Timers:
     def __init__(self):
         self.events = queue.Queue()
@@ -1134,7 +1234,8 @@ TOOLS = [
     _t("find_files", "Search the user's folders for files/folders whose name contains the text.", {"name": S}, ["name"]),
     _t("open_website", "Open a URL in the browser.", {"url": S}, ["url"]),
     _t("google_search", "Show Google results in the browser (when the user wants to see results).", {"query": S}, ["query"]),
-    _t("youtube_search", "Search YouTube in the browser (music, videos).", {"query": S}, ["query"]),
+    _t("play_youtube", "PLAY a song or video on YouTube right away (finds the best match and starts it). Use whenever the user wants to hear/watch something.", {"query": S}, ["query"]),
+    _t("youtube_search", "Only show YouTube search results (when the user explicitly wants to browse results).", {"query": S}, ["query"]),
     _t("media_control", "Control media playback / sound.", {"action": {"type": "string", "enum": ["play_pause", "next", "previous", "stop", "mute", "volume_up", "volume_down"]}}, ["action"]),
     _t("set_volume", "Set system volume 0-100.", {"level": {"type": "number"}}, ["level"]),
     _t("window_control", "Manage windows.", {"action": {"type": "string", "enum": ["minimize", "maximize", "show_desktop", "switch", "close_window", "snap_left", "snap_right"]}}, ["action"]),
@@ -1150,6 +1251,8 @@ TOOLS = [
        {"command": S, "confirmed": {"type": "boolean"}}, ["command"]),
 ]
 TOOLS += [
+    _t("remember", "Save a fact about the user for the future (name, family, preferences, important dates...) when they ask you to remember something or tell you something clearly worth remembering.", {"fact": S}, ["fact"]),
+    _t("forget", "Delete remembered facts that contain the given words.", {"contains": S}, ["contains"]),
     _t("send_whatsapp", "Send a WhatsApp message to the user's own phone. Use ONLY when the user asks to send/notify something to their phone or WhatsApp.", {"message": S}, ["message"]),
     _t("set_reminder", "Set a reminder the user asked for. Give minutes from now OR a clock time 'HH:MM'. Set whatsapp=true if the user wants it on their phone/WhatsApp.",
        {"text": S, "minutes": {"type": "number"}, "at": S, "whatsapp": {"type": "boolean"}}, ["text"]),
@@ -1163,19 +1266,25 @@ TOOLS += [
 ACTION_LABELS = {
     "open_app": "פותח: {name}", "close_app": "סוגר: {name}", "list_open_apps": "סורק חלונות פתוחים",
     "open_path": "פותח: {path}", "find_files": "מחפש קבצים: {name}", "open_website": "פותח אתר: {url}",
-    "google_search": "גוגל: {query}", "youtube_search": "יוטיוב: {query}", "media_control": "מדיה: {action}",
+    "google_search": "גוגל: {query}", "youtube_search": "יוטיוב: {query}", "play_youtube": "מנגן: {query}", "media_control": "מדיה: {action}",
     "set_volume": "עוצמה ← {level}%", "window_control": "חלון: {action}", "press_keys": "מקשים: {keys}",
     "type_text": "מקליד טקסט", "take_screenshot": "צילום מסך", "set_timer": "טיימר: {seconds} שניות",
     "get_datetime": "בודק שעה", "system_info": "אבחון מערכת", "power": "חשמל: {action}",
     "run_powershell": "פקודה: {command}", "web_search": "חיפוש ברשת: {query}",
     "read_webpage": "קורא דף: {url}", "get_weather": "מזג אוויר: {city}",
-    "send_whatsapp": "שולח לוואטסאפ", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
+    "send_whatsapp": "שולח לוואטסאפ", "remember": "זוכר: {fact}", "forget": "שוכח: {contains}", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
     "cancel_reminders": "מבטל תזכורות",
 }
 
 
 def system_prompt():
-    return f"""You are J.A.R.V.I.S., the user's personal AI, running on their own computer in Israel. Personality: the AI butler from the films - calm, precise, loyal, quietly witty.
+    facts = "\n".join(f"- {f}" for f in MEMORY.facts) or "- (nothing yet)"
+    return f"""You are J.A.R.V.I.S., the user's personal AI, running on their own computer in Israel. Personality: the AI butler from the films - calm, precise, loyal, quietly witty, genuinely smart.
+
+CONVERSATION: You are not just a command executor - you are a real conversation partner. Chat naturally, answer questions properly, share a brief opinion when asked, joke lightly, and follow the thread of the conversation (refer back to what was said earlier). The user may speak in several sentences with pauses - treat the whole message as one thought. If something is unclear, ask one short question.
+
+What you know about the user (from earlier conversations):
+{facts}
 
 LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern Israeli Hebrew (never English, never translated-sounding). Speak about yourself in masculine form. Call the user "{CFG['user_name']}" now and then.
 
@@ -1188,6 +1297,8 @@ Rules:
 - Risky actions (restart, shut down, sleep, sign out, any PowerShell) need confirmation first: say in Hebrew exactly what you'll do and ask "להמשיך?"; only after a clear yes (כן / תמשיך / בטח) call the tool with confirmed=true.
 - You DO have internet access through web_search, read_webpage and get_weather. For anything current (news, weather, prices, sports, people, opening hours...) use them and answer in your own words in Hebrew. Never say you can't access the internet. Default weather location: the user's location (leave city empty) unless they name a place.
 - For the current time or date, call get_datetime.
+- Music/videos: when the user wants to hear or watch something ("תנגן", "תשים", "אני רוצה לשמוע"), call play_youtube - it starts playing. Then say briefly what is playing.
+- Memory: when the user tells you something worth remembering about them, or asks you to remember, call remember.
 - Anything Google or web (Google search, YouTube, Gmail, Google Maps, Drive, Translate, any site) opens in Google Chrome: use google_search / youtube_search / open_website (e.g. Gmail -> https://mail.google.com, Maps -> https://www.google.com/maps/search/<place>). Don't open another browser.
 - Phone: you can send WhatsApp messages to the user's phone (send_whatsapp) and set reminders (set_reminder, with whatsapp=true when they want it on the phone). Only when they ask.
 - You only understand Hebrew. If the message is not in Hebrew, or is clearly garbled speech-recognition noise / background chatter not addressed to you, reply with exactly [IGNORE] and nothing else."""
@@ -1222,6 +1333,7 @@ class Brain:
             "list_open_apps": list_open_apps, "open_path": lambda: open_path(a["path"]),
             "find_files": lambda: find_files(a["name"]), "open_website": lambda: open_website(a["url"]),
             "google_search": lambda: google_search(a["query"]), "youtube_search": lambda: youtube_search(a["query"]),
+            "play_youtube": lambda: play_youtube(a["query"]),
             "media_control": lambda: media_control(a["action"]), "set_volume": lambda: set_volume(a["level"]),
             "window_control": lambda: window_control(a["action"]), "press_keys": lambda: press_keys(a["keys"]),
             "type_text": lambda: type_text(a["text"]), "take_screenshot": take_screenshot,
@@ -1230,6 +1342,7 @@ class Brain:
             "power": lambda: power(a["action"]), "run_powershell": lambda: run_powershell(a["command"]),
             "web_search": lambda: web_search(a["query"]), "read_webpage": lambda: read_webpage(a["url"]),
             "send_whatsapp": lambda: send_whatsapp(a["message"]),
+            "remember": lambda: MEMORY.remember(a["fact"]), "forget": lambda: MEMORY.forget(a["contains"]),
             "set_reminder": lambda: REMINDERS.add(a["text"], a.get("minutes"), a.get("at"), a.get("whatsapp", False)),
             "list_reminders": lambda: REMINDERS.list(),
             "cancel_reminders": lambda: REMINDERS.cancel(a.get("contains", "")),
@@ -1348,8 +1461,12 @@ class GroqBrain:
         raise RuntimeError("Groq: " + ", ".join(errors))
 
     def ask(self, text):
-        if len(self.history) > 16 or time.time() - self.last_used > 15 * 60:
+        if time.time() - self.last_used > 30 * 60:
             self.history = []
+        while len(self.history) > 30:              # drop the oldest exchange, never split a tool call
+            self.history.pop(0)
+            while self.history and self.history[0]["role"] != "user":
+                self.history.pop(0)
         self.last_used = time.time()
         mark = len(self.history)
         self.history.append({"role": "user", "content": text})
@@ -1572,7 +1689,8 @@ class Assistant:
             ev = self.timers.events.get()
             if isinstance(ev, str):
                 ev = {"text": ev, "whatsapp": False, "phone_text": ev}
-            to_phone = ev.get("whatsapp") or (CFG.get("whatsapp_when_away") and CFG.get("whatsapp_apikey") and user_away())
+            wa_ready = CFG.get("greenapi_token") if CFG.get("whatsapp_provider", "greenapi") == "greenapi" else CFG.get("whatsapp_apikey")
+            to_phone = ev.get("whatsapp") or (CFG.get("whatsapp_when_away") and wa_ready and user_away())
             if to_phone:
                 r = send_whatsapp(ev.get("phone_text") or ev["text"])
                 ui.action("נשלח לוואטסאפ" if r.get("ok") else "✗ " + r.get("error", ""))
@@ -1613,6 +1731,14 @@ class Assistant:
                 return n[1:]
             return n
 
+        m = re.match(r"^(תנגן|נגן|תנגני|תשמיע|השמע|תשים לי|שים לי|תפעיל לי את השיר|תפעיל את השיר)\s+(?:לי\s+)?(?:את\s+)?(?:השיר\s+)?(.+?)(?:\s+ביוטיוב)?$", s)
+        if m and len(m.group(2)) > 1:
+            song = m.group(2)
+            ui.action(f"מנגן: {song}")
+            r = play_youtube(song)
+            if r.get("played"):
+                return f"מנגן: {r['title']}." if r.get("title") else f"מנגן, {u}."
+            return f"פתחתי לך תוצאות ביוטיוב עבור {song}."
         m = re.match(r"^(תסגור|סגור|תסגרי|סגרי|תצא מ|צא מ)\s*(.+)$", s)
         if m:
             name = he_name(m.group(2))
@@ -1738,17 +1864,25 @@ class Assistant:
                 self.think(payload)
                 continue
             self.ears.beep()
-            q = self.ears.listen()      # nothing / non-English -> silently back to standby
-            while q:
-                if any(p in q for p in STOP_PHRASES) and len(q.split()) <= 4:
-                    self.speaker.say(f"בשמחה, {CFG['user_name']}.")
-                    break
-                if not self.think(q):
-                    break
+            # Conversation mode: after "Hey Jarvis" keep listening; it ends after a quiet stretch or "זהו".
+            window = float(CFG.get("follow_up_seconds", 25))
+            last = time.time()
+            q = self.ears.listen(start_timeout=8)
+            ui.js("conversation", True)
+            while True:
+                if q:
+                    if any(p in q for p in STOP_PHRASES) and len(q.split()) <= 4:
+                        self.speaker.say(f"בשמחה, {CFG['user_name']}.")
+                        break
+                    if self.think(q):
+                        last = time.time()           # a real exchange restarts the window
                 if not self.text_q.empty():
                     break
-                self.ears.beep(1318, 0.06)
-                q = self.ears.listen(start_timeout=float(CFG["follow_up_seconds"]))
+                left = window - (time.time() - last)
+                if left <= 0.5:
+                    break
+                q = self.ears.listen(start_timeout=left)
+            ui.js("conversation", False)
             if popped and CFG.get("auto_hide", True):
                 self.schedule_hide()
 
@@ -1781,8 +1915,12 @@ class Api:
             "has_claude": bool(CFG["anthropic_api_key"]), "claude_mask": _mask(CFG["anthropic_api_key"]),
             "brain_engine": CFG.get("brain_engine", "claude"), "stt_engine": CFG.get("stt_engine", "google"),
             "has_groq": bool(CFG.get("groq_api_key")), "groq_mask": _mask(CFG.get("groq_api_key", "")),
+            "pause": CFG.get("pause_seconds", 1.4),
             "bg": bool(CFG.get("run_in_background", True)), "autostart": bool(CFG.get("start_with_windows", True)),
             "auto_hide": bool(CFG.get("auto_hide", True)),
+            "wa_provider": CFG.get("whatsapp_provider", "greenapi"), "ga_url": CFG.get("greenapi_url", ""),
+            "ga_id": CFG.get("greenapi_id", ""), "has_ga": bool(CFG.get("greenapi_token")),
+            "ga_mask": _mask(CFG.get("greenapi_token", "")),
             "wa_phone": CFG.get("whatsapp_phone", ""), "has_wa": bool(CFG.get("whatsapp_apikey")),
             "wa_mask": _mask(CFG.get("whatsapp_apikey", "")), "wa_away": bool(CFG.get("whatsapp_when_away", True)),
             "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
@@ -1796,6 +1934,8 @@ class Api:
             CFG["anthropic_api_key"] = s["claude_key"].strip()
         if s.get("voice"):
             CFG["voice"] = s["voice"]
+        if s.get("pause"):
+            CFG["pause_seconds"] = max(0.6, min(3.5, float(s["pause"])))
         for k_ui, k_cfg in (("bg", "run_in_background"), ("autostart", "start_with_windows"), ("auto_hide", "auto_hide")):
             if k_ui in s:
                 CFG[k_cfg] = bool(s[k_ui])
@@ -1808,6 +1948,15 @@ class Api:
             if ph and not ph.startswith("+"):
                 ph = "+" + ph
             CFG["whatsapp_phone"] = ph
+        if s.get("wa_provider") in ("greenapi", "callmebot"):
+            CFG["whatsapp_provider"] = s["wa_provider"]
+        if s.get("ga_id", "").strip():
+            CFG["greenapi_id"] = "".join(ch for ch in s["ga_id"] if ch.isdigit())
+        if s.get("ga_token", "").strip():
+            CFG["greenapi_token"] = s["ga_token"].strip()
+        if s.get("ga_url", "").strip():
+            u = s["ga_url"].strip().rstrip("/")
+            CFG["greenapi_url"] = u if u.startswith("http") else "https://" + u
         if s.get("wa_key", "").strip():
             CFG["whatsapp_apikey"] = s["wa_key"].strip()
         if "wa_away" in s:
