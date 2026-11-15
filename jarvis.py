@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "5.0"
+VERSION = "5.1"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -265,9 +265,10 @@ ui = UI()
 
 # ======================================================================= STARTUP MUSIC
 def make_intro_wav(sr=44100):
-    """An original cinematic 'power-up' (about 6 seconds): low boom, rising synth swell, shimmer, final chord."""
+    """An original cinematic 'power-up': low boom, rising synth swell, shimmer, then a final chord that keeps
+    ringing (about 8 more seconds) so Jarvis can greet over it; the caller fades it out when he's done."""
     import numpy as np
-    T = 6.2
+    T = 14.0
     t = np.arange(int(sr * T)) / sr
     out = np.zeros_like(t)
     def env(a, d, start, length):
@@ -297,11 +298,16 @@ def make_intro_wav(sr=44100):
     # 4. final 'online' chord with bright ping
     for n in (293.7, 349.2, 440.0, 587.3, 880.0):
         out += 0.16 * (np.sin(2 * np.pi * n * t) + 0.3 * saw(n)) * env(0.02, 1.1, 4.1, 2.1)
+    # 5. warm pad that keeps the chord alive under the greeting
+    pad_env = np.clip((t - 4.3) / 1.2, 0, 1) * (0.8 + 0.2 * np.sin(2 * np.pi * 0.25 * t))
+    for n in (146.8, 220.0, 293.7, 349.2, 440.0):
+        for det in (-0.003, 0.003):
+            out += 0.05 * np.sin(2 * np.pi * n * (1 + det) * t + np.sin(2 * np.pi * 0.3 * t)) * pad_env
     out += 0.18 * np.sin(2 * np.pi * 1760 * t) * env(0.002, 0.5, 4.1, 1.5)
     # light echo, fade, normalise
     d = int(0.23 * sr)
     out[d:] += 0.35 * out[:-d]
-    out *= np.minimum(1, (T - t) / 0.8)
+    out *= np.minimum(1, (T - t) / 2.5)
     out /= max(1e-6, np.abs(out).max()) / 0.85
     pcm = (np.tanh(out * 1.2) / np.tanh(1.2) * 32000).astype(np.int16)
     stereo = np.repeat(pcm[:, None], 2, axis=1)
@@ -312,19 +318,17 @@ def make_intro_wav(sr=44100):
 
 
 def play_intro(pygame):
-    """Plays the startup music. Returns (sound, seconds) so the greeting can start near its end."""
+    """Plays the startup music. Returns (sound, seconds until the greeting should start)."""
     path = (CFG.get("intro_file") or "").strip()
     secs = float(CFG.get("intro_seconds", 12) or 12)
     try:
         if CFG.get("intro_mode", "builtin") == "file" and path and os.path.isfile(path):
             snd = pygame.mixer.Sound(path)
-            snd.play(fade_ms=300)
-            length = min(snd.get_length(), secs)
-            threading.Timer(max(0.5, length - 1.5), lambda: snd.fadeout(1500)).start()
-            return snd, length
+            snd.play(fade_ms=300, maxtime=int(secs * 1000) + 15000)
+            return snd, min(5.0, snd.get_length() * 0.6, secs)
         snd = pygame.mixer.Sound(file=BytesIO(make_intro_wav()))
         snd.play()
-        return snd, snd.get_length()
+        return snd, 4.4                          # right after the final chord hits
     except Exception as e:
         log.warning(f"intro music: {e}")
         return None, 0
@@ -2614,10 +2618,15 @@ class Assistant:
         h = datetime.now().hour
         part = "בוקר טוב" if 5 <= h < 12 else "צהריים טובים" if h < 17 else "ערב טוב" if h < 22 else "לילה טוב"
         if not BACKGROUND_START:
+            snd = None
             if CFG.get("intro_music", True):
-                snd, length = play_intro(self.speaker.pygame)
-                time.sleep(max(0, length - 1.3))      # greet over the last moment of the music
-            self.speaker.say(f"{part}, {CFG['user_name']}. כל המערכות פועלות.")
+                snd, greet_at = play_intro(self.speaker.pygame)
+                time.sleep(greet_at)
+                if snd:
+                    snd.set_volume(0.45)              # music keeps playing, a little quieter, under the voice
+            self.speaker.say(f"{part}, {CFG['user_name']}. כל המערכות פועלות. אני לשירותך.")
+            if snd:
+                snd.fadeout(3500)                     # and only now it slowly disappears
         def bg_check():
             info = check_update()
             if info.get("available"):
@@ -2874,8 +2883,10 @@ class Api:
             pg = assistant.speaker.pygame
             for ch in range(pg.mixer.get_num_channels()):
                 pg.mixer.Channel(ch).stop()
-            snd, length = play_intro(pg)
-            return {"ok": bool(snd), "seconds": round(length, 1)}
+            snd, greet_at = play_intro(pg)
+            if snd:
+                threading.Timer(greet_at + 4, lambda: snd.fadeout(3500)).start()
+            return {"ok": bool(snd)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
