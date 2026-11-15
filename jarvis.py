@@ -4,7 +4,7 @@ J.A.R.V.I.S  -  Personal desktop AI assistant
 ==============================================
 * Say "Hey Jarvis" (or click the core / press the mic button) and speak.
 * Futuristic HUD window instead of a console.
-* Brain: Claude (Anthropic API key).  Voice: ElevenLabs (falls back to a free voice).
+* Brain: Claude (Anthropic API key).  Voice: free Microsoft neural voice.
 * Controls the computer ONLY when you ask: open/close apps, files, sites, search,
   media, volume, keys, typing, screenshots, power, PowerShell (with confirmation).
 
@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "2.4"
+VERSION = "2.5"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -53,12 +53,7 @@ if sys.stdout:  # running with a console
 DEFAULT_CONFIG = {
     "anthropic_api_key": "",
     "claude_model": "claude-haiku-5-5",   # cheapest Claude model
-    "elevenlabs_api_key": "",
-    "elevenlabs_voice_id": "",
-    "elevenlabs_voice_name": "",
-    "elevenlabs_model": "eleven_multilingual_v2",
-    "fallback_voice": "en-GB-RyanNeural",   # free voice used without ElevenLabs
-    "speech_recognition": "google",          # google (free) | elevenlabs (more accurate)
+    "voice": "en-GB-RyanNeural",            # free British male voice
     "user_name": "sir",
     "wake_threshold": 0.5,
     "follow_up_seconds": 6,
@@ -73,6 +68,11 @@ def load_config():
             cfg.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
         except Exception as e:
             log.error(f"config.json unreadable: {e}")
+    for old in ("elevenlabs_api_key", "elevenlabs_voice_id", "elevenlabs_voice_name",
+                "elevenlabs_model", "speech_recognition"):
+        cfg.pop(old, None)                                  # ElevenLabs was removed
+    if "fallback_voice" in cfg:
+        cfg["voice"] = cfg.pop("fallback_voice")
     if cfg.get("claude_model") == "claude-sonnet-5-5":   # move old installs to the cheap model
         cfg["claude_model"] = "claude-haiku-5-5"
     return cfg
@@ -135,39 +135,19 @@ class Speaker:
         self.lock = threading.Lock()
         self._stop = False
 
-    # ---- ElevenLabs
-    def _eleven(self, text):
-        import httpx
-        vid = CFG["elevenlabs_voice_id"]
-        r = httpx.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{vid}?output_format=mp3_44100_128",
-            headers={"xi-api-key": CFG["elevenlabs_api_key"], "Content-Type": "application/json"},
-            json={"text": text, "model_id": CFG["elevenlabs_model"]},
-            timeout=40,
-        )
-        if r.status_code != 200:
-            raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:200]}")
-        return r.content
-
-    # ---- free fallback (Microsoft Edge voices)
+    # ---- free Microsoft neural voice
     def _edge(self, text):
         import edge_tts
 
         async def run():
             buf = BytesIO()
-            async for chunk in edge_tts.Communicate(text, CFG["fallback_voice"], rate="+4%").stream():
+            async for chunk in edge_tts.Communicate(text, CFG["voice"], rate="+4%").stream():
                 if chunk["type"] == "audio":
                     buf.write(chunk["data"])
             return buf.getvalue()
         return asyncio.run(run())
 
     def synth(self, text):
-        if CFG["elevenlabs_api_key"] and CFG["elevenlabs_voice_id"]:
-            try:
-                return self._eleven(text)
-            except Exception as e:
-                log.error(f"ElevenLabs failed: {e}")
-                ui.toast("ElevenLabs voice failed - using backup voice. Check your key / credits.", "warn")
         return self._edge(text)
 
     def say(self, text, show=True):
@@ -299,31 +279,6 @@ class Ears:
 
     def transcribe(self, pcm):
         """Returns English text, or None if the speech was not clearly English."""
-        if CFG["speech_recognition"] == "elevenlabs" and CFG["elevenlabs_api_key"]:
-            try:
-                import httpx
-                buf = BytesIO()
-                with wave.open(buf, "wb") as w:
-                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE); w.writeframes(pcm)
-                r = httpx.post(
-                    "https://api.elevenlabs.io/v1/speech-to-text",
-                    headers={"xi-api-key": CFG["elevenlabs_api_key"]},
-                    data={"model_id": "scribe_v1"},          # no forced language -> it tells us what it heard
-                    files={"file": ("speech.wav", buf.getvalue(), "audio/wav")},
-                    timeout=30,
-                )
-                if r.status_code == 200:
-                    d = r.json()
-                    lang = (d.get("language_code") or "").lower()
-                    prob = float(d.get("language_probability") or 0)
-                    text = (d.get("text") or "").strip()
-                    if not lang.startswith("en") or prob < 0.5:
-                        log.info(f"ignored non-English speech ({lang} {prob:.2f}): {text}")
-                        return None
-                    return english_only(text)
-                log.error(f"Scribe {r.status_code}: {r.text[:200]}")
-            except Exception as e:
-                log.error(f"Scribe failed: {e}")
         try:
             res = self.rec.recognize_google(self.sr.AudioData(pcm, SAMPLE_RATE, 2), language="en-US", show_all=True)
         except self.sr.UnknownValueError:
@@ -1179,44 +1134,19 @@ class Api:
     def get_settings(self):
         return {
             "has_claude": bool(CFG["anthropic_api_key"]), "claude_mask": _mask(CFG["anthropic_api_key"]),
-            "has_eleven": bool(CFG["elevenlabs_api_key"]), "eleven_mask": _mask(CFG["elevenlabs_api_key"]),
-            "voice_id": CFG["elevenlabs_voice_id"], "voice_name": CFG["elevenlabs_voice_name"],
+            "voice": CFG["voice"],
             "user_name": CFG["user_name"], "wake_threshold": CFG["wake_threshold"],
-            "speech_recognition": CFG["speech_recognition"],
         }
-
-    def list_voices(self, key=""):
-        import httpx
-        key = key.strip() or CFG["elevenlabs_api_key"]
-        if not key:
-            return {"ok": False, "error": "Enter your ElevenLabs key first."}
-        try:
-            r = httpx.get("https://api.elevenlabs.io/v1/voices", headers={"xi-api-key": key}, timeout=20)
-            if r.status_code != 200:
-                return {"ok": False, "error": f"ElevenLabs said: {r.status_code} - check the key."}
-            voices = []
-            for v in r.json().get("voices", []):
-                lab = v.get("labels") or {}
-                desc = ", ".join(x for x in (lab.get("gender"), lab.get("accent"), lab.get("description")) if x)
-                voices.append({"id": v["voice_id"], "name": v["name"], "desc": desc})
-            return {"ok": True, "voices": voices}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
 
     def save_settings(self, s):
         if s.get("claude_key", "").strip():
             CFG["anthropic_api_key"] = s["claude_key"].strip()
-        if s.get("eleven_key", "").strip():
-            CFG["elevenlabs_api_key"] = s["eleven_key"].strip()
-        if s.get("voice_id"):
-            CFG["elevenlabs_voice_id"] = s["voice_id"]
-            CFG["elevenlabs_voice_name"] = s.get("voice_name", "")
+        if s.get("voice"):
+            CFG["voice"] = s["voice"]
         if s.get("user_name", "").strip():
             CFG["user_name"] = s["user_name"].strip()
         if s.get("wake_threshold"):
             CFG["wake_threshold"] = float(s["wake_threshold"])
-        if s.get("speech_recognition") in ("google", "elevenlabs"):
-            CFG["speech_recognition"] = s["speech_recognition"]
         save_config()
         result = {"ok": True, "claude": None}
         if CFG["anthropic_api_key"]:

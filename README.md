@@ -12,8 +12,6 @@
 ייפתח חלון **SYSTEM CONFIGURATION**:
 - **CLAUDE API KEY** – המוח, חובה. בלעדיו ג'רוויס מבין רק פקודות פשוטות.
   נכנסים ל־console.anthropic.com ← נרשמים ← Billing (מוסיפים כמה דולרים) ← API Keys ← Create Key ← מעתיקים ומדביקים.
-- **ELEVENLABS API KEY** – הקול האמיתי, לא חובה.
-  נכנסים ל־elevenlabs.io ← נרשמים (גם החינמי עובד) ← API Keys ← Create ← מעתיקים ומדביקים ← לוחצים על **LOAD VOICES** ובוחרים קול.
 - לוחצים על **SAVE & CONNECT**.
 
 אפשר לחזור להגדרות בכל רגע דרך גלגל השיניים שבפינה.

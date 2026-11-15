@@ -256,20 +256,18 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
     </div>
 
     <div class="field">
-      <label>2 · ELEVENLABS API KEY (THE VOICE) — OPTIONAL</label>
-      <div class="help">For a realistic voice. Get it at
-        <a data-link="https://elevenlabs.io/app/settings/api-keys">elevenlabs.io</a> → sign up (free plan works) → API Keys → Create → copy. Without it Jarvis uses a free British voice.</div>
+      <label>2 · VOICE</label>
+      <div class="help">Free voices, no account needed.</div>
       <div class="row">
-        <input id="sEleven" type="password" placeholder="sk_…">
-        <button class="btn" id="loadVoices" style="flex:0 0 auto">LOAD VOICES</button>
-      </div>
-    </div>
-
-    <div class="field">
-      <label>3 · VOICE</label>
-      <div class="help">Pick a voice from your ElevenLabs account. Tip: in ElevenLabs open <a data-link="https://elevenlabs.io/app/voice-library">Voice Library</a>, search "British butler", click "Add to my voices", then press LOAD VOICES again.</div>
-      <div class="row">
-        <select id="sVoice"><option value="">— press LOAD VOICES —</option></select>
+        <select id="sVoice">
+          <option value="en-GB-RyanNeural">Ryan — British, male (classic butler)</option>
+          <option value="en-GB-ThomasNeural">Thomas — British, male</option>
+          <option value="en-GB-SoniaNeural">Sonia — British, female</option>
+          <option value="en-GB-LibbyNeural">Libby — British, female</option>
+          <option value="en-US-GuyNeural">Guy — American, male</option>
+          <option value="en-US-AndrewNeural">Andrew — American, male</option>
+          <option value="en-AU-WilliamNeural">William — Australian, male</option>
+        </select>
         <button class="btn ghost" id="testVoice" style="flex:0 0 auto">TEST</button>
       </div>
     </div>
@@ -278,13 +276,6 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
       <div class="field">
         <label>HOW SHOULD I ADDRESS YOU</label>
         <input id="sName" placeholder="sir">
-      </div>
-      <div class="field">
-        <label>SPEECH RECOGNITION</label>
-        <select id="sStt">
-          <option value="google">Google (free)</option>
-          <option value="elevenlabs">ElevenLabs Scribe (more accurate)</option>
-        </select>
       </div>
     </div>
 
@@ -401,10 +392,8 @@ document.querySelectorAll('[data-link]').forEach(a => a.onclick = () => api() &&
 /* ---------- settings */
 function openSettings(cfg){
   $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'Saved ' + cfg.claude_mask + ' (leave empty to keep)' : 'sk-ant-…';
-  $('#sEleven').value = ''; $('#sEleven').placeholder = cfg.has_eleven ? 'Saved ' + cfg.eleven_mask + ' (leave empty to keep)' : 'sk_…';
-  if (cfg.voice_id){ $('#sVoice').innerHTML = `<option value="${cfg.voice_id}">${cfg.voice_name || cfg.voice_id}</option>`; }
+  if (cfg.voice) $('#sVoice').value = cfg.voice;
   $('#sName').value = cfg.user_name || 'sir';
-  $('#sStt').value = cfg.speech_recognition || 'google';
   $('#sSens').value = cfg.wake_threshold; $('#sensVal').textContent = cfg.wake_threshold;
   $('#saveMsg').textContent = '';
   $('#settings').classList.add('open');
@@ -412,22 +401,12 @@ function openSettings(cfg){
 $('#sSens').oninput = e => $('#sensVal').textContent = e.target.value;
 $('#openSettings').onclick = async () => openSettings(await api().get_settings());
 $('#closeSettings').onclick = () => $('#settings').classList.remove('open');
-$('#loadVoices').onclick = async () => {
-  const sel = $('#sVoice'); sel.innerHTML = '<option>Loading…</option>';
-  const r = await api().list_voices($('#sEleven').value);
-  if (!r.ok){ sel.innerHTML = '<option value="">— error —</option>'; $('#saveMsg').innerHTML = `<span class="bad">${r.error}</span>`; return; }
-  if (!r.voices.length){ sel.innerHTML = '<option value="">No voices yet — add one from the Voice Library</option>'; return; }
-  const pref = r.voices.findIndex(v => /british/i.test(v.desc) && /male/i.test(v.desc) && !/female/i.test(v.desc));
-  sel.innerHTML = r.voices.map((v,i) => `<option value="${v.id}" ${i === pref ? 'selected' : ''}>${v.name}${v.desc ? ' — ' + v.desc : ''}</option>`).join('');
-};
 $('#testVoice').onclick = async () => { await save(true); api().test_voice(); };
 async function save(quiet){
-  const sel = $('#sVoice'), opt = sel.options[sel.selectedIndex];
   $('#saveMsg').innerHTML = '<span>Connecting…</span>';
   const r = await api().save_settings({
-    claude_key: $('#sClaude').value, eleven_key: $('#sEleven').value,
-    voice_id: sel.value, voice_name: opt ? opt.text.split(' — ')[0] : '',
-    user_name: $('#sName').value, wake_threshold: $('#sSens').value, speech_recognition: $('#sStt').value
+    claude_key: $('#sClaude').value, voice: $('#sVoice').value,
+    user_name: $('#sName').value, wake_threshold: $('#sSens').value
   });
   if (r.claude === 'ok') $('#saveMsg').innerHTML = '<span class="ok">✔ Saved. AI core connected.</span>';
   else if (r.claude) $('#saveMsg').innerHTML = `<span class="bad">Saved, but Claude refused the key: ${r.claude}</span>`;
@@ -438,7 +417,7 @@ async function save(quiet){
 $('#saveSettings').onclick = () => save(false);
 function refreshVoiceInd(cfg){
   const e = $('#indVoice'); e.classList.remove('on','warn','off');
-  e.classList.add(cfg.has_eleven && cfg.voice_id ? 'on' : 'warn');
+  e.classList.add('on');
 }
 
 $('#updateBtn').onclick = async () => {
