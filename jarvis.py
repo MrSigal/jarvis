@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "2.2"
+VERSION = "2.3"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -754,7 +754,7 @@ Rules:
 - Closing: use close_app (check list_open_apps if you're not sure of the name). Never close Jarvis itself.
 - Risky actions (restart, shut down, sleep, sign out, any PowerShell) need a spoken confirmation first: say exactly what you'll do and ask "Shall I proceed?"; only after a clear yes call the tool with confirmed=true.
 - You DO have internet access through web_search, read_webpage and get_weather. For anything current (news, weather, prices, sports, people, opening hours...) use them and answer in your own words. Never say you can't access the internet.
-- Current local time: {datetime.now():%A %d %B %Y, %H:%M}."""
+- For the current time or date, call get_datetime."""
 
 
 DANGEROUS = {"run_powershell"}
@@ -767,7 +767,9 @@ class Brain:
         self.client = anthropic.Anthropic(api_key=CFG["anthropic_api_key"])
         self.timers = timers
         self.history = []
-        self.web_search = True
+        self.system = system_prompt()      # must stay identical for the whole conversation
+        self.last_used = 0.0
+        self.effort_ok = True
 
     def run_tool(self, name, a):
         try:
@@ -805,17 +807,37 @@ class Brain:
         return out
 
     def _create(self):
-        return self.client.messages.create(model=CFG["claude_model"], max_tokens=800,
-                                           system=system_prompt(), tools=TOOLS, messages=self.history)
+        kw = dict(model=CFG["claude_model"], max_tokens=4000, system=self.system,
+                  tools=TOOLS, messages=self.history)
+        if self.effort_ok:
+            try:
+                return self.client.messages.create(**kw, extra_body={"output_config": {"effort": "low"}})
+            except Exception as e:
+                if "effort" not in str(e) and "output_config" not in str(e):
+                    raise
+                self.effort_ok = False
+        return self.client.messages.create(**kw)
 
-    def ask(self, text):
-        self._trim()
+    def new_conversation(self):
+        self.history = []
+        self.system = system_prompt()
+
+    def ask(self, text, _retry=True):
+        # conversations must be append-only: instead of trimming, start fresh when long or idle
+        if len(self.history) > 40 or time.time() - self.last_used > 15 * 60:
+            self.new_conversation()
+        self.last_used = time.time()
         mark = len(self.history)
         self.history.append({"role": "user", "content": text})
         try:
             return self._loop()
-        except Exception:
+        except Exception as e:
             del self.history[mark:]
+            low = str(e).lower()
+            if _retry and ("400" in low or "invalid_request" in low or "thinking" in low):
+                log.warning(f"request rejected, starting a fresh conversation: {e}")
+                self.new_conversation()
+                return self.ask(text, _retry=False)
             raise
 
     def _loop(self):
@@ -833,14 +855,12 @@ class Brain:
                 continue
             if resp.stop_reason == "pause_turn":
                 continue
-            return " ".join(b.text for b in resp.content if b.type == "text").strip()
+            text = " ".join(b.text for b in resp.content if b.type == "text").strip()
+            if resp.stop_reason == "refusal":
+                self.new_conversation()
+                return text or f"I'm afraid I can't help with that one, {CFG['user_name']}."
+            return text or f"Done, {CFG['user_name']}."
         return f"My apologies, {CFG['user_name']}, that got rather tangled. Could you try again?"
-
-    def _trim(self, keep=30):
-        h = self.history[-keep:]
-        while h and not (h[0]["role"] == "user" and isinstance(h[0]["content"], str)):
-            h = h[1:]
-        self.history = h
 
 
 class BasicBrain:
