@@ -13,6 +13,7 @@ Run:  pythonw jarvis.py        (no console)
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -31,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "4.7"
+VERSION = "4.8"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -1115,6 +1116,255 @@ def get_datetime():
             "date": f"יום {HE_DAYS[n.weekday()]}, {n.day} ב{HE_MONTHS[n.month - 1]} {n.year}"}
 
 
+# ======================================================================= PHONE EXTRAS: screen, files, PC control, routines
+MAX_PHONE_FILE = 14 * 1024 * 1024          # ntfy.sh attachment limit is 15 MB
+
+
+def screenshot_jpeg(max_w=1600, quality=70):
+    img = _gui().screenshot()
+    if img.width > max_w:
+        img = img.resize((max_w, round(img.height * max_w / img.width)))
+    buf = BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=quality, optimize=True)
+    return buf.getvalue()
+
+
+def latest_download():
+    folder = KNOWN_FOLDERS["downloads"]
+    files = [p for p in folder.iterdir() if p.is_file() and not p.name.startswith(("~", "."))
+             and p.suffix.lower() not in (".crdownload", ".tmp", ".part", ".partial", ".ini")]
+    return max(files, key=lambda p: p.stat().st_mtime) if files else None
+
+
+def resolve_file(what):
+    """'latest_download', a full path, or part of a file name."""
+    w = (what or "").strip().strip('"')
+    if not w or w.lower() in ("latest_download", "last_download", "latest", "last"):
+        return latest_download()
+    p = Path(os.path.expandvars(os.path.expanduser(w)))
+    if p.is_file():
+        return p
+    for hit in find_files(w, max_results=10).get("results", []):
+        if Path(hit).is_file():
+            return Path(hit)
+    return None
+
+
+def send_to_phone(what="latest_download"):
+    if what in ("screen", "screenshot"):
+        PHONE.send_blob(screenshot_jpeg(), f"screen_{datetime.now():%H%M}.jpg", "image/jpeg", "image")
+        return {"ok": True, "sent": "צילום מסך"}
+    p = resolve_file(what)
+    if not p:
+        return {"ok": False, "error": "לא מצאתי את הקובץ"}
+    if p.stat().st_size > MAX_PHONE_FILE:
+        return {"ok": False, "error": f"הקובץ {p.name} גדול מדי (מעל 14MB)"}
+    import mimetypes
+    mime = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+    PHONE.send_blob(p.read_bytes(), p.name, mime, "image" if mime.startswith("image/") else "file")
+    return {"ok": True, "sent": p.name, "note": "the file is now in the iPhone app (the app must be open to receive it)"}
+
+
+def save_from_phone(data, name):
+    folder = KNOWN_FOLDERS["downloads"] / "Jarvis"
+    folder.mkdir(parents=True, exist_ok=True)
+    name = re.sub(r'[\\/:*?"<>|]+', "_", Path(name or "file").name)[:120] or "file"
+    path = folder / name
+    i = 1
+    while path.exists():
+        path = folder / f"{Path(name).stem} ({i}){Path(name).suffix}"
+        i += 1
+    path.write_bytes(data)
+    return path
+
+
+def close_all_apps():
+    """Politely asks every open window to close (like clicking X), so programs can still ask to save."""
+    if OS != "Windows":
+        return {"ok": False, "error": "only supported on Windows"}
+    ps = "Get-Process | Where-Object {$_.MainWindowTitle} | ForEach-Object { \"$($_.Id)|$($_.ProcessName)\" }"
+    r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                       timeout=20, creationflags=_no_window())
+    keep = {"explorer", "jarvis", "python", "pythonw", "msedgewebview2", "textinputhost", "applicationframehost",
+            "systemsettings", "shellexperiencehost", "searchhost", "startmenuexperiencehost", "remoting_desktop"}
+    closed = []
+    for line in r.stdout.splitlines():
+        pid, _, name = line.strip().partition("|")
+        if not pid.isdigit() or int(pid) == os.getpid() or name.lower() in keep:
+            continue
+        subprocess.run(["taskkill", "/PID", pid], capture_output=True, creationflags=_no_window())
+        closed.append(name)
+    return {"ok": True, "closed": sorted(set(closed))}
+
+
+def phone_command(cmd):
+    """Buttons in the iPhone app. Returns a short Hebrew confirmation."""
+    u = CFG["user_name"]
+    acts = {
+        "lock": (lambda: power("lock"), "נעלתי את המחשב."),
+        "sleep": (lambda: power("sleep"), "המחשב נכנס למצב שינה."),
+        "shutdown": (lambda: subprocess.Popen("shutdown /s /t 60", shell=True),
+                     "המחשב ייכבה בעוד דקה. אפשר לבטל עם הכפתור 'בטל כיבוי'."),
+        "cancel_shutdown": (lambda: power("cancel"), "ביטלתי את הכיבוי."),
+        "mute": (lambda: media_control("mute"), "השתקתי / ביטלתי השתקה."),
+        "vol_up": (lambda: media_control("volume_up"), "הגברתי."),
+        "vol_down": (lambda: media_control("volume_down"), "הנמכתי."),
+        "play_pause": (lambda: media_control("play_pause"), "בוצע."),
+        "next": (lambda: media_control("next"), "השיר הבא."),
+        "desktop": (lambda: window_control("show_desktop"), "מציג את שולחן העבודה."),
+    }
+    if cmd not in acts:
+        return "פקודה לא מוכרת."
+    fn, msg = acts[cmd]
+    ui.action("📱 " + msg)
+    fn()
+    return msg
+
+
+DEFAULT_ROUTINES = {
+    "מצב עבודה": ["פתח chrome", "אתר https://mail.google.com", "תגיד מצב עבודה מוכן"],
+    "לילה טוב": ["סגור הכל", "תגיד לילה טוב. המחשב ייכבה בעוד דקה, אפשר לבטל עם תבטל כיבוי", "כבה"],
+}
+ROUTINE_HELP = ("פתח <תוכנה> | סגור <תוכנה> | סגור הכל | אתר <כתובת> | נגן <שיר> | עוצמה <0-100> | השתק | "
+                "נעל | שינה | כבה | המתן <שניות> | תגיד <טקסט>")
+
+
+def routines():
+    r = CFG.get("routines")
+    return r if isinstance(r, dict) else dict(DEFAULT_ROUTINES)
+
+
+def parse_routines(text):
+    """Settings box format:  [name] then one step per line."""
+    out, cur = {}, None
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.fullmatch(r"\[(.+)\]", line)
+        if m:
+            cur = m.group(1).strip()
+            out[cur] = []
+        elif cur:
+            out[cur].append(line)
+    return {k: v for k, v in out.items() if k and v}
+
+
+def routines_text():
+    return "\n\n".join(f"[{n}]\n" + "\n".join(s) for n, s in routines().items())
+
+
+def run_step(step):
+    """Runs one routine line. Returns text to say (or '')."""
+    s = step.strip()
+    verb, _, arg = s.partition(" ")
+    arg = arg.strip()
+    if verb == "תגיד":
+        return arg
+    if verb in ("פתח", "תפתח"):
+        if arg in HE_SITES:
+            open_website(HE_SITES[arg])
+        elif arg.startswith("http"):
+            open_website(arg)
+        else:
+            open_app(HE_APPS.get(arg, arg))
+    elif verb == "אתר":
+        open_website(HE_SITES.get(arg, arg))
+    elif s in ("סגור הכל", "סגור הכול", "סגור את הכל"):
+        close_all_apps()
+        time.sleep(3)
+    elif verb in ("סגור", "תסגור"):
+        close_app(HE_APPS.get(arg, arg))
+    elif verb in ("נגן", "תנגן"):
+        play_youtube(arg)
+    elif verb == "עוצמה":
+        set_volume(float(re.sub(r"[^\d.]", "", arg) or 50))
+    elif s == "השתק":
+        media_control("mute")
+    elif s == "נעל":
+        power("lock")
+    elif s == "שינה":
+        power("sleep")
+    elif s in ("כבה", "כבה מחשב"):
+        if OS == "Windows":
+            subprocess.Popen("shutdown /s /t 60", shell=True)
+    elif verb == "המתן":
+        time.sleep(min(120, float(re.sub(r"[^\d.]", "", arg) or 1)))
+    else:
+        raise ValueError(f"שלב לא מוכר: {s}")
+    return ""
+
+
+def find_routine(name):
+    n = (name or "").strip().strip("\"'").removeprefix("ה") if name else ""
+    for k in routines():
+        if k == (name or "").strip() or k.removeprefix("ה") == n or k.replace("מצב ", "") == n:
+            return k
+    return None
+
+
+def run_routine(name):
+    key = find_routine(name)
+    if not key:
+        return {"ok": False, "error": f"אין שגרה בשם '{name}'", "routines": list(routines())}
+    said, errors = [], []
+    ui.action(f"שגרה: {key}")
+    for step in routines()[key]:
+        try:
+            t = run_step(step)
+            if t:
+                said.append(t)
+        except Exception as e:
+            errors.append(str(e))
+            log.warning(f"routine step {step!r}: {e}")
+        time.sleep(0.4)
+    return {"ok": not errors or bool(said), "routine": key, "say": " ".join(said), "errors": errors}
+
+
+def save_routine(name, steps):
+    name = (name or "").strip()
+    steps = [s.strip() for s in (steps or []) if str(s).strip()]
+    if not name or not steps:
+        return {"ok": False, "error": "צריך שם ושלבים"}
+    r = routines()
+    r[name] = steps
+    CFG["routines"] = r
+    save_config()
+    return {"ok": True, "routine": name, "steps": steps}
+
+
+def delete_routine(name):
+    key = find_routine(name)
+    if not key:
+        return {"ok": False, "error": "לא נמצאה שגרה כזו"}
+    r = routines()
+    r.pop(key)
+    CFG["routines"] = r
+    save_config()
+    return {"ok": True, "deleted": key}
+
+
+def morning_brief():
+    out = {"datetime": get_datetime()}
+    try:
+        out["weather"] = get_weather("")
+    except Exception as e:
+        out["weather"] = {"error": str(e)}
+    today = datetime.now().strftime("%Y-%m-%d")
+    out["reminders_today"] = [{"text": i["text"], "time": i["due"][11:16]}
+                              for i in sorted((REMINDERS.items if REMINDERS else []), key=lambda x: x["due"]) if i["due"].startswith(today)]
+    if MAIL.configured():
+        try:
+            mails = MAIL.fetch_unread(limit=8, days=1)
+            out["unread_mail"] = [{"from": m["from"], "subject": m["subject"], "important": m["gmail_important"]}
+                                  for m in mails]
+        except Exception as e:
+            out["unread_mail"] = {"error": str(e)}
+    else:
+        out["unread_mail"] = "email not connected"
+    return out
+
+
 # ======================================================================= NOTIFICATIONS (Windows + iPhone app)
 TRAY = None
 
@@ -1450,6 +1700,28 @@ class PhoneLink:
         obj.setdefault("ts", time.time())
         httpx.post(f"https://ntfy.sh/{self.topic}-r", content=self.seal(obj), timeout=20)
 
+    def send_blob(self, data, name, mime, kind="file"):
+        """Big things (screenshots, files) go as an encrypted ntfy attachment; the app gets a small sealed pointer."""
+        import httpx, os as _os
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        iv = _os.urandom(12)
+        r = httpx.put(f"https://ntfy.sh/{self.topic}-f", content=iv + AESGCM(self.key).encrypt(iv, data, None),
+                      headers={"Filename": "blob.bin"}, timeout=120)
+        r.raise_for_status()
+        url = r.json()["attachment"]["url"]
+        self.reply({"type": "file", "kind": kind, "name": name, "mime": mime, "url": url, "size": len(data)})
+
+    def fetch_blob(self, url):
+        import httpx
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        if not re.match(r"^https://ntfy\.sh/file/[\w.-]+$", url or ""):
+            raise ValueError("bad file address")
+        r = httpx.get(url, timeout=120, follow_redirects=True)
+        r.raise_for_status()
+        if len(r.content) > MAX_PHONE_FILE + 64:
+            raise ValueError("file too big")
+        return AESGCM(self.key).decrypt(r.content[:12], r.content[12:], None)
+
     def push(self, obj):
         """Notification to the iPhone app (shown if the app is open)."""
         if CFG.get("phone_link", True):
@@ -1484,6 +1756,35 @@ class PhoneLink:
                 log.exception("phone ask")
                 ans = f"שגיאה: {e}"
             self.reply({"type": "answer", "id": m.get("id"), "text": (ans or "")[:1200]})
+        elif m.get("type") == "screen":
+            try:
+                ui.action("📱 צילום מסך לטלפון")
+                self.send_blob(screenshot_jpeg(), f"screen_{datetime.now():%H%M}.jpg", "image/jpeg", "image")
+            except Exception as e:
+                log.exception("phone screen")
+                self.reply({"type": "answer", "id": m.get("id"), "text": f"לא הצלחתי לצלם את המסך: {e}"})
+        elif m.get("type") == "cmd":
+            try:
+                text = phone_command(str(m.get("cmd", "")))
+            except Exception as e:
+                text = f"שגיאה: {e}"
+            self.reply({"type": "answer", "id": m.get("id"), "text": text, "quiet": True})
+        elif m.get("type") == "routines":
+            self.reply({"type": "routines", "names": list(routines())})
+        elif m.get("type") == "routine":
+            r = run_routine(str(m.get("name", "")))
+            text = r.get("say") or (f"הפעלתי את '{r['routine']}'." if r.get("routine") else r.get("error", ""))
+            self.reply({"type": "answer", "id": m.get("id"), "text": text})
+        elif m.get("type") == "upload":
+            try:
+                path = save_from_phone(self.fetch_blob(m.get("url")), m.get("name"))
+                ui.action(f"📱 קובץ התקבל: {path.name}")
+                notify(f"📥 התקבל קובץ מהטלפון: {path.name}")
+                text = f"שמרתי את {path.name} במחשב, בתיקייה הורדות ← Jarvis."
+            except Exception as e:
+                log.exception("phone upload")
+                text = f"לא הצלחתי לקבל את הקובץ: {e}"
+            self.reply({"type": "answer", "id": m.get("id"), "text": text, "quiet": True})
 
     def loop(self):
         import httpx
@@ -1602,6 +1903,13 @@ TOOLS += [
     _t("web_search", "Search the internet. Use for news, facts, prices, sports, people, anything current. Returns titles, snippets and URLs.", {"query": S}, ["query"]),
     _t("read_webpage", "Read the text of a web page (e.g. a result from web_search) when snippets aren't enough.", {"url": S}, ["url"]),
     _t("get_weather", "Current weather and 3-day forecast for a city (leave empty for the user's location).", {"city": S}),
+    _t("morning_brief", "Everything for a morning briefing: date/time, weather, today's reminders, new unread mail. Call when the user says good morning (בוקר טוב) or asks for a briefing / what's on today."),
+    _t("send_to_phone", "Send a file or a screenshot from this PC to the user's iPhone app. what = 'latest_download' (newest file in Downloads), 'screenshot', a full path, or part of a file name.", {"what": S}, ["what"]),
+    _t("run_routine", "Run one of the user's saved routines (a list of steps) by name, e.g. 'מצב עבודה', 'לילה טוב'.", {"name": S}, ["name"]),
+    _t("list_routines", "List the user's saved routines and their steps."),
+    _t("save_routine", "Create or replace a routine the user explicitly asked for. Steps are short Hebrew lines, each one of: " + ROUTINE_HELP + ". App names in English (פתח chrome).",
+       {"name": S, "steps": {"type": "array", "items": S}}, ["name", "steps"]),
+    _t("delete_routine", "Delete a routine the user asked to delete.", {"name": S}, ["name"]),
 ]
 
 ACTION_LABELS = {
@@ -1614,7 +1922,9 @@ ACTION_LABELS = {
     "run_powershell": "פקודה: {command}", "web_search": "חיפוש ברשת: {query}",
     "read_webpage": "קורא דף: {url}", "get_weather": "מזג אוויר: {city}",
     "check_email": "בודק מיילים", "remember": "זוכר: {fact}", "forget": "שוכח: {contains}", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
-    "cancel_reminders": "מבטל תזכורות",
+    "cancel_reminders": "מבטל תזכורות", "morning_brief": "מכין תדריך בוקר", "send_to_phone": "שולח לטלפון: {what}",
+    "run_routine": "שגרה: {name}", "list_routines": "בודק שגרות", "save_routine": "שומר שגרה: {name}",
+    "delete_routine": "מוחק שגרה: {name}",
 }
 
 
@@ -1642,6 +1952,9 @@ Rules:
 - Memory: when the user tells you something worth remembering about them, or asks you to remember, call remember.
 - Anything Google or web (Google search, YouTube, Gmail, Google Maps, Drive, Translate, any site) opens in Google Chrome: use google_search / youtube_search / open_website (e.g. Gmail -> https://mail.google.com, Maps -> https://www.google.com/maps/search/<place>). Don't open another browser.
 - Reminders: set_reminder (only when asked). You have no WhatsApp or SMS access.
+- Good morning / briefing: call morning_brief, then speak a short natural briefing (3-5 sentences): greeting, weather, today's reminders, and only the important new emails. Don't read addresses.
+- Email: when asked about mail, give ONE short sentence per email, important ones first, at most 5; say how many others there are. You can only read mail, not send or delete.
+- Phone: send_to_phone sends files/screenshots to the iPhone app. Routines: run_routine / save_routine / list_routines.
 - You only understand Hebrew. If the message is not in Hebrew, or is clearly garbled speech-recognition noise / background chatter not addressed to you, reply with exactly [IGNORE] and nothing else."""
 
 
@@ -1688,6 +2001,10 @@ class Brain:
             "list_reminders": lambda: REMINDERS.list(),
             "cancel_reminders": lambda: REMINDERS.cancel(a.get("contains", "")),
             "get_weather": lambda: get_weather(a.get("city", "")),
+            "morning_brief": morning_brief, "send_to_phone": lambda: send_to_phone(a.get("what", "latest_download")),
+            "run_routine": lambda: run_routine(a["name"]), "list_routines": lambda: {"routines": routines()},
+            "save_routine": lambda: save_routine(a["name"], a.get("steps")),
+            "delete_routine": lambda: delete_routine(a["name"]),
         }.get(name)
         if not f:
             return {"ok": False, "error": "unknown tool"}
@@ -2059,6 +2376,15 @@ class Assistant:
             self.speaker.say(f"מתקין את גרסה {r['version']}. אחזור בעוד רגע.")
             restart_jarvis(r.get("installer", False))
 
+        if re.fullmatch(r"(תבטל|בטל|תעצור|עצור) (את ה)?כיבוי( המחשב)?", s):
+            power("cancel")
+            return f"ביטלתי את הכיבוי, {u}."
+        m = re.match(r"^(?:תפעיל|הפעל|תריץ)\s+(?:את\s+)?(?:ה?שגרה\s+)?(.+)$", s)
+        key = find_routine(m.group(1)) if m else (s if s in routines() else None)
+        if key:
+            r = run_routine(key)
+            return r.get("say") or f"הפעלתי את '{key}', {u}."
+
         def he_name(raw):
             n = raw.strip()
             while True:
@@ -2284,6 +2610,7 @@ class Api:
             "has_gemini": bool(CFG.get("gemini_api_key")), "gemini_mask": _mask(CFG.get("gemini_api_key", "")),
             "gemini_voice": CFG.get("gemini_voice", "Charon"),
             "user_name": CFG["user_name"], "wake_threshold": CFG["wake_threshold"],
+            "routines": routines_text(), "routine_help": ROUTINE_HELP,
         }
 
     def save_settings(self, s):
@@ -2314,8 +2641,16 @@ class Api:
             CFG["user_name"] = s["user_name"].strip()
         if s.get("wake_threshold"):
             CFG["wake_threshold"] = float(s["wake_threshold"])
+        warn = []
+        if "routines" in s:
+            parsed = parse_routines(s["routines"])
+            ok_start = ("פתח ", "תפתח ", "סגור", "תסגור ", "אתר ", "נגן ", "תנגן ", "עוצמה ", "השתק", "נעל", "שינה",
+                        "כבה", "המתן ", "תגיד ")
+            warn = [line for steps in parsed.values() for line in steps if not line.startswith(ok_start)]
+            CFG["routines"] = parsed
         save_config()
-        result = {"ok": True, "claude": None, "groq": None, "engine": CFG.get("brain_engine", "claude")}
+        result = {"ok": True, "claude": None, "groq": None, "engine": CFG.get("brain_engine", "claude"),
+                  "routine_warn": warn}
         if CFG.get("groq_api_key"):
             try:
                 import httpx

@@ -389,6 +389,13 @@ body.gl .reactor .glow{opacity:.18}
     </div>
 
     <div class="field">
+      <label>שגרות</label>
+      <div class="help">פקודה אחת שעושה כמה דברים. אומרים "היי ג'רוויס, <b>מצב עבודה</b>" (או לוחצים עליה באפליקציה באייפון). שם השגרה בסוגריים מרובעים, ומתחתיו שלב בכל שורה. אפשר גם פשוט לבקש מג'רוויס: "תיצור שגרה בשם... שפותחת...".<br>שלבים אפשריים: <span id="routineHelp" style="color:var(--c2)"></span></div>
+      <textarea id="sRoutines" dir="rtl" spellcheck="false" style="width:100%;min-height:150px;background:#000a12;border:1px solid var(--cdim);color:var(--text);font:14px/1.6 Heebo,sans-serif;padding:10px;border-radius:6px;resize:vertical;outline:none"></textarea>
+      <div id="routineMsg" style="font-size:13px;margin-top:4px"></div>
+    </div>
+
+    <div class="field">
       <label>הפסקה באמצע משפט — <span id="pauseVal"></span> שניות</label>
       <div class="help">כמה זמן ג'רוויס מחכה כשאתה עוצר לחשוב, לפני שהוא מבין שסיימת. אם הוא קוטע אותך, הזז ימינה.</div>
       <input id="sPause" type="range" min="0.8" max="3" step="0.1" style="padding:0;height:auto;direction:ltr">
@@ -538,6 +545,7 @@ function openSettings(cfg){
   $('#sGemVoice').value = cfg.gemini_voice || 'Charon';
   showEngine();
   $('#sName').value = cfg.user_name || 'אדוני';
+  $('#sRoutines').value = cfg.routines || ''; $('#routineHelp').textContent = cfg.routine_help || ''; $('#routineMsg').textContent = '';
   $('#sSens').value = cfg.wake_threshold; $('#sensVal').textContent = cfg.wake_threshold;
   $('#saveMsg').textContent = '';
   $('#settings').classList.add('open');
@@ -581,8 +589,9 @@ async function save(quiet){
     pause: $('#sPause').value, bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked,
     brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
-    user_name: $('#sName').value, wake_threshold: $('#sSens').value
+    user_name: $('#sName').value, wake_threshold: $('#sSens').value, routines: $('#sRoutines').value
   });
+  $('#routineMsg').innerHTML = (r.routine_warn || []).length ? '<span class="bad">שורות שג\'רוויס לא מבין: ' + r.routine_warn.map(x => x.replace(/</g, '&lt;')).join(' · ') + '</span>' : '';
   const key = r.engine === 'groq' ? r.groq : r.claude, name = r.engine === 'groq' ? 'Groq' : 'Claude';
   if (key === 'ok') $('#saveMsg').innerHTML = `<span class="ok">✔ נשמר. המוח (${name}) מחובר.</span>`;
   else if (key) $('#saveMsg').innerHTML = `<span class="bad">נשמר, אבל ${name} דחה את המפתח: ${key}</span>`;

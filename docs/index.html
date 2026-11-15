@@ -45,6 +45,23 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
 #pair.show{display:flex}
 #pair h2{color:var(--c);font-size:22px} #pair p{color:var(--text);line-height:1.6;font-size:16px;max-width:360px}
 #pair ol{text-align:right;line-height:1.9;font-size:15.5px;max-width:360px}
+#panel{display:none;padding:8px 12px 2px;border-top:1px solid var(--cdim);background:rgba(1,10,18,.92)}
+#panel.open{display:block}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+.pb{height:56px;border-radius:12px;border:1px solid var(--cdim);background:rgba(63,217,255,.07);color:var(--text);font:inherit;font-size:12.5px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.pb b{font-size:19px;font-weight:400;line-height:1}
+.pb:active{background:rgba(63,217,255,.25)}
+.pb.warn{border-color:rgba(255,79,94,.45)}
+#routines{display:flex;gap:7px;overflow-x:auto;padding:8px 0 6px}
+.chip{flex:0 0 auto;height:36px;padding:0 14px;border-radius:18px;border:1px solid var(--c);background:rgba(63,217,255,.1);color:var(--c);font:inherit;font-size:14px}
+.msg img{display:block;max-width:100%;border-radius:8px;margin-top:4px}
+.filebtn{margin-top:6px;height:36px;padding:0 14px;border-radius:18px;border:1px solid var(--c);background:rgba(63,217,255,.12);color:var(--c);font:inherit;font-size:14px}
+#viewer{position:fixed;inset:0;background:#000;z-index:30;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
+#viewer.show{display:block}
+#viewer img{display:block;width:100%;height:100%;object-fit:contain}
+#viewer.zoom img{width:250%;height:auto;object-fit:initial}
+#viewer .x{position:fixed;top:calc(env(safe-area-inset-top) + 10px);left:12px;width:42px;height:42px;border-radius:50%;border:1px solid var(--c);background:rgba(0,0,0,.6);color:var(--c);font-size:20px;z-index:31}
+#viewer .hint{position:fixed;bottom:calc(env(safe-area-inset-bottom) + 14px);left:50%;transform:translateX(-50%);color:var(--muted);font-size:13px;background:rgba(0,0,0,.6);padding:4px 12px;border-radius:12px}
 #install{display:none;margin:0 14px 8px;padding:10px 12px;border:1px dashed var(--cdim);border-radius:12px;font-size:14px;color:var(--c2);line-height:1.5}
 </style>
 </head>
@@ -53,6 +70,7 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
   <div class="logo">J.A.R.V.I.S</div>
   <div class="status" id="status"><i></i><span id="statusTxt">מתחבר…</span></div>
   <div style="display:flex;gap:8px">
+    <button class="iconbtn" id="ctlBtn" title="שליטה במחשב">🎛</button>
     <button class="iconbtn" id="lockBtn" title="נעילה עם Face ID">🔓</button>
     <button class="iconbtn" id="voiceBtn" title="קול">🔊</button>
   </div>
@@ -61,12 +79,31 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
 <div id="state">בהמתנה</div>
 <div id="install">כדי להתקין: בספארי לוחצים על כפתור השיתוף <b>⬆︎</b> ובוחרים <b>"הוסף למסך הבית"</b>.</div>
 <div id="log"></div>
+<div id="panel">
+  <div class="grid">
+    <button class="pb" data-act="screen"><b>🖥</b>מה על המסך</button>
+    <button class="pb" data-act="upload"><b>📤</b>שלח קובץ</button>
+    <button class="pb" data-ask="תשלח לי לטלפון את הקובץ האחרון שהורדתי"><b>📥</b>הורדה אחרונה</button>
+    <button class="pb" data-cmd="lock"><b>🔒</b>נעל</button>
+    <button class="pb" data-cmd="vol_down"><b>🔉</b>הנמך</button>
+    <button class="pb" data-cmd="vol_up"><b>🔊</b>הגבר</button>
+    <button class="pb" data-cmd="mute"><b>🔇</b>השתק</button>
+    <button class="pb" data-cmd="play_pause"><b>⏯</b>נגן/עצור</button>
+    <button class="pb" data-cmd="sleep"><b>😴</b>שינה</button>
+    <button class="pb warn" data-cmd="shutdown"><b>⏻</b>כבה</button>
+    <button class="pb" data-cmd="cancel_shutdown"><b>✋</b>בטל כיבוי</button>
+    <button class="pb" data-ask="בוקר טוב"><b>☀️</b>תדריך</button>
+  </div>
+  <div id="routines"></div>
+  <input type="file" id="fileIn" style="display:none">
+</div>
 <form id="form" autocomplete="off">
   <button class="round" type="button" id="mic" title="דבר"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
   <input id="inp" placeholder="דבר או כתוב לג'רוויס…" enterkeyhint="send">
   <button class="round" type="submit" title="שלח"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12H4M10 6l-6 6 6 6"/></svg></button>
 </form>
 
+<div id="viewer"><button class="x" id="viewerX">✕</button><img id="viewerImg" alt=""><div class="hint">הקש על התמונה כדי להגדיל</div></div>
 <div id="lock" style="position:fixed;inset:0;background:var(--bg);display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;z-index:20;text-align:center;padding:30px">
   <div style="font-size:54px">🔒</div>
   <h2 style="color:var(--c);font-size:22px">ג'רוויס נעול</h2>
@@ -171,6 +208,9 @@ function listen(){
     let m; try { m = await open_(d.message); } catch(e){ return; }
     if (m.type === 'pong'){ lastPong = Date.now(); setStatus(true); return; }
     if (m.type === 'notify'){ if (Date.now() / 1000 - (m.ts || 0) < 600) add('j', m.text); return; }
+    if (m.type === 'file'){ setStatus(true); gotFile(m); return; }
+    if (m.type === 'routines'){ setStatus(true); showRoutines(m.names || []); return; }
+    if (m.type === 'answer' && m.quiet){ setStatus(true); const el = pending[m.id]; delete pending[m.id]; if (el) { el.className = 'msg sys'; el.textContent = m.text; } else add('sys', m.text); return; }
     if (m.type === 'answer'){
       setStatus(true);
       const el = pending[m.id]; delete pending[m.id];
@@ -181,6 +221,75 @@ function listen(){
   es.onerror = () => {};
 }
 async function ping(){ try { await send({type: 'ping', ts: Date.now() / 1000}); } catch(e){} setTimeout(() => { if (Date.now() - lastPong > 12000) setStatus(false); }, 10000); }
+
+// ---------- PC control panel, screen, files, routines
+$('#ctlBtn').onclick = () => { const o = $('#panel').classList.toggle('open'); if (o && KEY) send({type: 'routines', ts: Date.now() / 1000}).catch(() => {}); };
+const rid = () => Math.random().toString(36).slice(2);
+async function sendCmd(obj, label){
+  const id = rid(); const el = add('sys', label || '…'); pending[id] = el;
+  try { await send(Object.assign({id, ts: Date.now() / 1000}, obj)); }
+  catch(e){ el.textContent = 'אין חיבור לאינטרנט'; delete pending[id]; return; }
+  setTimeout(() => { if (pending[id]) { pending[id].textContent = 'ג\'רוויס לא עונה — האם המחשב דלוק וג\'רוויס פתוח?'; delete pending[id]; setStatus(false); } }, 45000);
+  return id;
+}
+let screenWait = null;
+document.querySelectorAll('#panel [data-cmd]').forEach(b => b.onclick = () => {
+  const c = b.dataset.cmd;
+  if (c === 'shutdown' && !confirm('לכבות את המחשב? (הוא ייכבה בעוד דקה, ואפשר לבטל)')) return;
+  if (c === 'sleep' && !confirm('להכניס את המחשב למצב שינה? אחרי זה לא תוכל להעיר אותו מהטלפון.')) return;
+  sendCmd({type: 'cmd', cmd: c}, '…');
+});
+document.querySelectorAll('#panel [data-ask]').forEach(b => b.onclick = () => { $('#panel').classList.remove('open'); busy = true; ask(b.dataset.ask); });
+$('#panel [data-act=screen]').onclick = async () => {
+  const id = await sendCmd({type: 'screen'}, '📸 מצלם את המסך…');
+  screenWait = id ? pending[id] : null; if (id) delete pending[id];
+  setTimeout(() => { if (screenWait) { screenWait.textContent = 'לא הגיע צילום מסך — האם המחשב דלוק וג\'רוויס פתוח?'; screenWait = null; } }, 60000);
+};
+$('#panel [data-act=upload]').onclick = () => $('#fileIn').click();
+$('#fileIn').onchange = async () => {
+  const f = $('#fileIn').files[0]; $('#fileIn').value = ''; if (!f) return;
+  if (f.size > 14 * 1024 * 1024) { add('sys', 'הקובץ גדול מדי (עד 14MB).'); return; }
+  const el = add('sys', '📤 שולח את ' + f.name + '…');
+  try {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv}, KEY, await f.arrayBuffer()));
+    const body = new Uint8Array(12 + ct.length); body.set(iv); body.set(ct, 12);
+    const r = await fetch('https://ntfy.sh/' + TOPIC + '-f', {method: 'PUT', body, headers: {'Filename': 'blob.bin'}});
+    const j = await r.json(); if (!j.attachment) throw new Error(j.error || 'upload');
+    el.remove();
+    sendCmd({type: 'upload', url: j.attachment.url, name: f.name}, '📤 ' + f.name + ' — ממתין למחשב…');
+  } catch(e){ el.textContent = 'השליחה נכשלה: ' + e.message; }
+};
+async function gotFile(m){
+  const el = screenWait || add('sys', '📥 מקבל ' + (m.name || 'קובץ') + '…'); screenWait = null;
+  try {
+    const r = await fetch(m.url); if (!r.ok) throw new Error(r.status);
+    const raw = new Uint8Array(await r.arrayBuffer());
+    const pt = await crypto.subtle.decrypt({name: 'AES-GCM', iv: raw.slice(0, 12)}, KEY, raw.slice(12));
+    const blob = new Blob([pt], {type: m.mime || 'application/octet-stream'});
+    const url = URL.createObjectURL(blob);
+    el.className = 'msg j'; el.textContent = m.kind === 'image' ? '' : '📄 ' + m.name;
+    if (m.kind === 'image') {
+      const img = new Image(); img.src = url; img.onclick = () => { $('#viewerImg').src = url; $('#viewer').className = 'show'; };
+      img.onload = () => { $('#log').scrollTop = 1e9; };
+      el.appendChild(img);
+    }
+    const b = document.createElement('button'); b.className = 'filebtn'; b.textContent = 'שמור / שתף';
+    b.onclick = async () => {
+      const file = new File([blob], m.name || 'file', {type: blob.type});
+      if (navigator.canShare && navigator.canShare({files: [file]})) { try { await navigator.share({files: [file]}); } catch(e){} }
+      else { const a = document.createElement('a'); a.href = url; a.download = m.name || 'file'; a.click(); }
+    };
+    el.appendChild(document.createElement('br')); el.appendChild(b); $('#log').scrollTop = 1e9;
+  } catch(e){ el.textContent = 'לא הצלחתי לקבל את הקובץ (' + e.message + ')'; }
+}
+$('#viewerImg').onclick = () => $('#viewer').classList.toggle('zoom');
+$('#viewerX').onclick = () => { $('#viewer').className = ''; };
+function showRoutines(names){
+  const box = $('#routines'); box.innerHTML = '';
+  names.forEach(n => { const c = document.createElement('button'); c.className = 'chip'; c.textContent = '⚡ ' + n;
+    c.onclick = () => { $('#panel').classList.remove('open'); sendCmd({type: 'routine', name: n}, '⚡ ' + n + '…'); }; box.appendChild(c); });
+}
 
 // ---------- voice input: hands-free mode (tap the mic once, then just talk)
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
