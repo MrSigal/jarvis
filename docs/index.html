@@ -130,10 +130,11 @@ let voiceOn = store.get('jarvis_voice', '1') === '1';
 $('#voiceBtn').textContent = voiceOn ? '🔊' : '🔈';
 $('#voiceBtn').onclick = () => { voiceOn = !voiceOn; store.set('jarvis_voice', voiceOn ? '1' : '0'); $('#voiceBtn').textContent = voiceOn ? '🔊' : '🔈'; speechSynthesis.cancel(); };
 function speak(text){
-  if (!voiceOn || !window.speechSynthesis) { setState('idle'); return; }
+  if (!voiceOn || !window.speechSynthesis) { setState('idle'); resumeHandsFree(); return; }
   const u = new SpeechSynthesisUtterance(text); u.lang = 'he-IL';
   const v = speechSynthesis.getVoices().find(v => /^he/i.test(v.lang)); if (v) u.voice = v;
-  u.onstart = () => setState('speaking'); u.onend = u.onerror = () => setState('idle');
+  u.onstart = () => setState('speaking');
+  u.onend = u.onerror = () => { setState('idle'); resumeHandsFree(); };
   speechSynthesis.cancel(); speechSynthesis.speak(u);
 }
 
@@ -150,8 +151,8 @@ async function ask(text){
   const wait = add('sys', '…');
   pending[id] = wait;
   try { await send({type: 'ask', id, text, ts: Date.now() / 1000}); }
-  catch(e){ wait.textContent = 'אין חיבור לאינטרנט'; setState('idle'); return; }
-  setTimeout(() => { if (pending[id]) { pending[id].textContent = 'ג\'רוויס לא עונה — האם המחשב דלוק וג\'רוויס פתוח?'; delete pending[id]; setState('idle'); setStatus(false); } }, 45000);
+  catch(e){ wait.textContent = 'אין חיבור לאינטרנט'; delete pending[id]; setState('idle'); resumeHandsFree(); return; }
+  setTimeout(() => { if (pending[id]) { pending[id].textContent = 'ג\'רוויס לא עונה — האם המחשב דלוק וג\'רוויס פתוח?'; delete pending[id]; setState('idle'); setStatus(false); resumeHandsFree(); } }, 45000);
 }
 function listen(){
   const es = new EventSource('https://ntfy.sh/' + TOPIC + '-r/sse');
@@ -164,29 +165,67 @@ function listen(){
       setStatus(true);
       const el = pending[m.id]; delete pending[m.id];
       if (el) { el.className = 'msg j'; el.textContent = m.text || '…'; } else add('j', m.text);
-      if (m.text) speak(m.text); else setState('idle');
+      if (m.text) speak(m.text); else { setState('idle'); resumeHandsFree(); }
     }
   };
   es.onerror = () => {};
 }
 async function ping(){ try { await send({type: 'ping', ts: Date.now() / 1000}); } catch(e){} setTimeout(() => { if (Date.now() - lastPong > 12000) setStatus(false); }, 10000); }
 
-// ---------- voice input (Safari speech recognition when available, otherwise the keyboard microphone)
+// ---------- voice input: hands-free mode (tap the mic once, then just talk)
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null, recOn = false;
+let rec = null, recOn = false, handsFree = false, busy = false, wakeLock = null, restartT = null;
+function micUI(){ $('#mic').classList.toggle('rec', handsFree); }
+async function keepAwake(on){
+  try {
+    if (on && 'wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => wakeLock = null); }
+    if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch(e){}
+}
+function startRec(){
+  if (!handsFree || recOn || busy || !SR) return;
+  rec = new SR(); rec.lang = 'he-IL'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
+  let text = '';
+  rec.onstart = () => { recOn = true; setState('listening'); $('#state').textContent = 'מקשיב — פשוט דבר'; };
+  rec.onresult = e => { text = ''; for (const r of e.results) text += r[0].transcript; $('#inp').value = text; };
+  rec.onerror = e => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      setHandsFree(false); add('sys', 'צריך לאשר גישה למיקרופון: הגדרות האייפון ← Safari ← מיקרופון ← לאפשר.');
+    }
+  };
+  rec.onend = () => {
+    recOn = false;
+    const t = text.trim(); $('#inp').value = '';
+    if (t.split(/\s+/).length >= 1 && t.length > 1) { busy = true; ask(t); }      // sent -> wait for the answer
+    else scheduleRestart();
+  };
+  try { rec.start(); } catch(e){ scheduleRestart(800); }
+}
+function scheduleRestart(ms = 250){ clearTimeout(restartT); if (handsFree && !busy) restartT = setTimeout(startRec, ms); }
+function resumeHandsFree(){ busy = false; if (handsFree) { setState('idle'); scheduleRestart(400); } }
+function setHandsFree(on){
+  handsFree = on; store.set('jarvis_handsfree', on ? '1' : '0'); micUI(); keepAwake(on);
+  if (on) { speechSynthesis.cancel(); busy = false; startRec(); }
+  else { clearTimeout(restartT); try { rec && rec.abort(); } catch(e){} recOn = false; setState('idle'); }
+}
 $('#mic').onclick = () => {
-  if (!SR) { $('#inp').focus(); add('sys', 'לחץ על המיקרופון במקלדת כדי להכתיב'); return; }
-  if (recOn) { rec.stop(); return; }
-  speechSynthesis.cancel();
-  rec = new SR(); rec.lang = 'he-IL'; rec.interimResults = true; rec.continuous = false;
-  let finalText = '';
-  rec.onstart = () => { recOn = true; $('#mic').classList.add('rec'); setState('listening'); };
-  rec.onresult = e => { let t = ''; for (const r of e.results) t += r[0].transcript; $('#inp').value = t; finalText = t; };
-  rec.onerror = () => {};
-  rec.onend = () => { recOn = false; $('#mic').classList.remove('rec'); setState('idle'); if (finalText.trim()) { $('#inp').value = ''; ask(finalText); } };
-  rec.start();
+  if (!SR) { $('#inp').focus(); add('sys', 'הדיבור החופשי לא נתמך כאן. פתח את האפליקציה בספארי, או לחץ על המיקרופון במקלדת כדי להכתיב.'); return; }
+  setHandsFree(!handsFree);
+  add('sys', handsFree ? 'דיבור חופשי פועל 🎙 — פשוט דבר. לחץ שוב על המיקרופון כדי להפסיק.' : 'דיבור חופשי כבוי.');
 };
-$('#form').onsubmit = e => { e.preventDefault(); const t = $('#inp').value; $('#inp').value = ''; ask(t); };
+// iPhone needs one tap after opening the app before it may use the microphone
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { try { rec && rec.abort(); } catch(e){} recOn = false; }
+  else if (handsFree) { keepAwake(true); scheduleRestart(500); }
+});
+if (SR && store.get('jarvis_handsfree', '0') === '1') {
+  const tapOnce = document.createElement('div');
+  tapOnce.textContent = 'לחץ כאן כדי להתחיל להקשיב 🎙';
+  tapOnce.style.cssText = 'position:fixed;left:50%;bottom:110px;transform:translateX(-50%);padding:12px 20px;border-radius:24px;border:1px solid var(--amber);color:var(--amber);background:rgba(20,12,0,.9);font-size:16px;z-index:5';
+  tapOnce.onclick = () => { tapOnce.remove(); setHandsFree(true); };
+  document.body.appendChild(tapOnce);
+}
+$('#form').onsubmit = e => { e.preventDefault(); const t = $('#inp').value; $('#inp').value = ''; if (t.trim()) { busy = true; try { rec && rec.abort(); } catch(_){} ask(t); } };
 
 // ---------- reactor (same shader as the desktop app)
 (() => {
@@ -251,7 +290,7 @@ $('#form').onsubmit = e => { e.preventDefault(); const t = $('#inp').value; $('#
 })();
 
 // ---------- start
-if (SECRET) initCrypto().then(() => { listen(); ping(); setInterval(ping, 60000); add('sys', 'שלום! כתוב או לחץ על המיקרופון ודבר עם ג\'רוויס.'); });
+if (SECRET) initCrypto().then(() => { listen(); ping(); setInterval(ping, 60000); add('sys', 'שלום! לחץ פעם אחת על המיקרופון ופשוט דבר — אני אקשיב עד שתלחץ שוב.'); });
 $('#pairBtn').onclick = () => {
   const k = keyFrom($('#pairCode').value);
   if (!k) { $('#pairErr').textContent = 'הקוד לא נראה נכון. העתק אותו שוב מההגדרות במחשב.'; return; }
