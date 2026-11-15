@@ -62,10 +62,50 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
 #viewer.zoom img{width:250%;height:auto;object-fit:initial}
 #viewer .x{position:fixed;top:calc(env(safe-area-inset-top) + 10px);left:12px;width:42px;height:42px;border-radius:50%;border:1px solid var(--c);background:rgba(0,0,0,.6);color:var(--c);font-size:20px;z-index:31}
 #viewer .hint{position:fixed;bottom:calc(env(safe-area-inset-bottom) + 14px);left:50%;transform:translateX(-50%);color:var(--muted);font-size:13px;background:rgba(0,0,0,.6);padding:4px 12px;border-radius:12px}
+#boot{position:fixed;inset:0;z-index:40;background:#000306;display:flex;align-items:center;justify-content:center;flex-direction:column;transition:opacity .8s}
+#boot.gone{opacity:0;pointer-events:none}
+#boot .bar{width:82vw;direction:ltr;display:none}
+#boot.run .bar{display:block}
+#boot .head{display:flex;justify-content:space-between;font-family:Orbitron,sans-serif;color:var(--c);letter-spacing:.3em;font-size:12px;margin-bottom:10px;text-shadow:0 0 10px rgba(63,217,255,.7)}
+#boot .segs{display:grid;grid-template-columns:repeat(20,1fr);gap:3px;height:14px;padding:3px;border:1px solid var(--cdim);clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%)}
+#boot .segs i{background:var(--c);opacity:.08;box-shadow:0 0 6px var(--c);transition:opacity .12s}
+#boot .segs i.on{opacity:.95}
+#boot .blog{margin-top:16px;height:150px;overflow:hidden;font-family:Menlo,monospace;font-size:12px;color:var(--c2);opacity:.85;direction:rtl;text-align:right}
+#boot .blog div{animation:in .25s}
+#boot .rings{position:relative;width:76vw;height:76vw;max-width:340px;max-height:340px;display:none}
+#boot.stage2 .bar{display:none}
+#boot.stage2 .rings,#boot.tap .rings{display:block}
+#boot .rings span{position:absolute;inset:0;margin:auto;border-radius:50%;border:1.5px solid var(--c);opacity:0;box-shadow:0 0 14px rgba(63,217,255,.35),inset 0 0 14px rgba(63,217,255,.2)}
+#boot.stage2 .rings span{animation:ringIn 1.1s cubic-bezier(.2,.8,.2,1) forwards}
+#boot.tap .rings span{opacity:.35;animation:breathe 2.4s ease-in-out infinite}
+#boot .rings span:nth-child(2){border-style:dashed;animation-delay:.12s}
+#boot .rings span:nth-child(3){border-width:6px;border-color:rgba(63,217,255,.35);animation-delay:.24s}
+#boot .rings span:nth-child(4){animation-delay:.36s}
+#boot .rings b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:Orbitron,sans-serif;font-weight:800;color:var(--c2);letter-spacing:.45em;font-size:22px;opacity:0;text-shadow:0 0 18px var(--c);padding-left:.45em}
+#boot.stage2 .rings b{animation:nameIn .6s .7s forwards}
+#boot.tap .rings b{opacity:.8}
+#boot .tapmsg{display:none;margin-top:34px;color:var(--c);font-size:17px;letter-spacing:.08em;animation:breathe 2.4s ease-in-out infinite}
+#boot.tap .tapmsg{display:block}
+@keyframes ringIn{from{opacity:0;transform:scale(1.9) rotate(-40deg)}to{opacity:1;transform:scale(1) rotate(0)}}
+@keyframes nameIn{from{opacity:0;letter-spacing:1.2em}to{opacity:1;letter-spacing:.45em}}
+@keyframes breathe{50%{opacity:.9}}
 #install{display:none;margin:0 14px 8px;padding:10px 12px;border:1px dashed var(--cdim);border-radius:12px;font-size:14px;color:var(--c2);line-height:1.5}
 </style>
 </head>
 <body class="idle">
+<div id="boot" class="tap">
+  <div class="bar">
+    <div class="head"><span>INITIATING SYSTEM</span><span id="bootPct">0%</span></div>
+    <div class="segs" id="bootSegs"></div>
+    <div class="blog" id="bootLog"></div>
+  </div>
+  <div class="rings">
+    <span style="width:100%;height:100%"></span><span style="width:84%;height:84%"></span>
+    <span style="width:66%;height:66%"></span><span style="width:46%;height:46%"></span>
+    <b>J.A.R.V.I.S</b>
+  </div>
+  <div class="tapmsg">הקש כדי להפעיל</div>
+</div>
 <header>
   <div class="logo">J.A.R.V.I.S</div>
   <div class="status" id="status"><i></i><span id="statusTxt">מתחבר…</span></div>
@@ -480,13 +520,60 @@ $('#unlockBtn').onclick = async () => {
 };
 lockUI();
 
+// ---------- boot: tap once (iPhone allows sound only after a tap), then music + loading; it can't be skipped
+try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch(e){}   // play even on silent mode
+let introBuf = null, actx = null;
+const introData = fetch('intro.mp3').then(r => r.arrayBuffer()).catch(() => null);
+function playIntro(){
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
+    actx = actx || new AC(); actx.resume();
+    const gain = actx.createGain(); gain.connect(actx.destination);
+    introData.then(buf => buf && actx.decodeAudioData(buf.slice(0))).then(ab => {
+      if (!ab) return; const src = actx.createBufferSource(); src.buffer = ab; src.connect(gain); src.start();
+    }).catch(() => {});
+    return gain;
+  } catch(e){ return null; }
+}
+function runBoot(after){
+  const boot = $('#boot'), segs = $('#bootSegs'), log = $('#bootLog'), pct = $('#bootPct');
+  for (let i = 0; i < 20; i++) segs.appendChild(document.createElement('i'));
+  const LINES = ['טוען ליבת מערכת .......... OK', 'מאתחל הצפנה .............. OK', 'מתחבר למחשב .............. OK',
+    'מסנכרן מערכות קול ........ OK', 'כל המערכות תקינות'];
+  const gain = playIntro();
+  boot.className = 'run';
+  const start = Date.now();
+  const tick = setInterval(() => {
+    const t = Date.now() - start;
+    if (t < 2300) {
+      const f = Math.min(1, t / 2200);
+      [...segs.children].forEach((s, i) => s.classList.toggle('on', i < Math.round(f * 20)));
+      pct.textContent = Math.round(f * 100) + '%';
+      const n = Math.min(LINES.length, Math.floor(f * LINES.length) + 1);
+      while (log.children.length < n) { const d = document.createElement('div'); d.textContent = LINES[log.children.length]; log.appendChild(d); }
+    } else if (t < 4600) {
+      boot.className = 'run stage2';
+    } else {
+      clearInterval(tick); boot.classList.add('gone'); setTimeout(() => boot.remove(), 900);
+      after();
+      if (gain && actx) {                                        // music keeps going a little, then slowly fades
+        const now = actx.currentTime; gain.gain.setValueAtTime(1, now + 2.5); gain.gain.linearRampToValueAtTime(0, now + 6.5);
+      }
+    }
+  }, 50);
+}
+
 // ---------- start (only after unlocking)
 let started = false;
 function start(){
   if (started || !SECRET) return; started = true;
   initCrypto().then(() => { listen(); ping(); setInterval(ping, 60000); add('sys', 'שלום! לחץ פעם אחת על המיקרופון ופשוט דבר — אני אקשיב עד שתלחץ שוב.'); });
 }
-if (lockId && SECRET) $('#lock').style.display = 'flex'; else start();
+function afterBoot(){ if (lockId && SECRET) $('#lock').style.display = 'flex'; else start(); }
+if (SECRET) {
+  const b = $('#boot');
+  b.addEventListener('click', function go(){ b.removeEventListener('click', go); runBoot(afterBoot); });
+} else { $('#boot').remove(); }
 $('#pairBtn').onclick = () => {
   const k = keyFrom($('#pairCode').value);
   if (!k) { $('#pairErr').textContent = 'הקוד לא נראה נכון. העתק אותו שוב מההגדרות במחשב.'; return; }
