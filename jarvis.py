@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "3.0"
+VERSION = "3.1"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 HERE = Path(__file__).resolve().parent
@@ -54,6 +54,10 @@ DEFAULT_CONFIG = {
     "anthropic_api_key": "",
     "claude_model": "claude-haiku-5-5",   # cheapest Claude model
     "voice": "he-IL-AvriNeural",            # free Hebrew male voice (female: he-IL-HilaNeural)
+    "tts_engine": "edge",                   # edge (fast, built-in) | voicestudio (local VoiceStudio app)
+    "vs_url": "http://127.0.0.1:3900",
+    "vs_model": "omnivoice",
+    "vs_voice": "default",
     "user_name": "אדוני",
     "wake_threshold": 0.5,
     "follow_up_seconds": 6,
@@ -153,7 +157,41 @@ class Speaker:
             return buf.getvalue()
         return asyncio.run(run())
 
+    # ---- VoiceStudio app running on this computer (OpenAI-compatible API)
+    def _voicestudio(self, text):
+        import httpx, base64
+        base = CFG["vs_url"].rstrip("/")
+        r = httpx.post(f"{base}/v1/audio/speech", timeout=90, json={
+            "model": CFG["vs_model"], "input": text[:4000], "voice": CFG["vs_voice"] or "default",
+            "language": "he", "response_format": "mp3"})
+        if r.status_code != 200:
+            raise RuntimeError(f"VoiceStudio {r.status_code}: {r.text[:200]}")
+        ctype = r.headers.get("content-type", "")
+        if not ctype.startswith("application/json"):
+            return r.content                                   # raw audio
+        d = r.json()                                           # some builds answer with JSON
+        for k in ("audio", "audio_base64", "b64", "data"):
+            if isinstance(d.get(k), str) and len(d[k]) > 100:
+                return base64.b64decode(d[k].split(",")[-1])
+        for k in ("url", "audio_url", "path", "file", "output"):
+            v = d.get(k)
+            if isinstance(v, str) and v:
+                if v.startswith("http") or v.startswith("/"):
+                    if v.startswith("/") and not os.path.exists(v):
+                        v = base + v
+                    if v.startswith("http"):
+                        return httpx.get(v, timeout=60).content
+                    return Path(v).read_bytes()
+                return Path(v).read_bytes()
+        raise RuntimeError(f"VoiceStudio answer not understood: {str(d)[:200]}")
+
     def synth(self, text):
+        if CFG.get("tts_engine") == "voicestudio":
+            try:
+                return self._voicestudio(text)
+            except Exception as e:
+                log.error(f"VoiceStudio failed: {e}")
+                ui.toast("VoiceStudio לא עונה - משתמש בקול הרגיל. האם האפליקציה פתוחה?", "warn")
         return self._edge(text)
 
     def say(self, text, show=True):
@@ -1197,7 +1235,8 @@ class Api:
     def get_settings(self):
         return {
             "has_claude": bool(CFG["anthropic_api_key"]), "claude_mask": _mask(CFG["anthropic_api_key"]),
-            "voice": CFG["voice"],
+            "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
+            "vs_voice": CFG.get("vs_voice", "default"), "vs_model": CFG.get("vs_model", "omnivoice"),
             "user_name": CFG["user_name"], "wake_threshold": CFG["wake_threshold"],
         }
 
@@ -1206,6 +1245,12 @@ class Api:
             CFG["anthropic_api_key"] = s["claude_key"].strip()
         if s.get("voice"):
             CFG["voice"] = s["voice"]
+        if s.get("tts_engine") in ("edge", "voicestudio"):
+            CFG["tts_engine"] = s["tts_engine"]
+        if s.get("vs_voice"):
+            CFG["vs_voice"] = s["vs_voice"]
+        if s.get("vs_model"):
+            CFG["vs_model"] = s["vs_model"]
         if s.get("user_name", "").strip():
             CFG["user_name"] = s["user_name"].strip()
         if s.get("wake_threshold"):
@@ -1222,6 +1267,31 @@ class Api:
                 result["claude"] = str(e)[:200]
         assistant.build_brain()
         return result
+
+    def vs_check(self):
+        """Is VoiceStudio running? Returns its voices."""
+        import httpx
+        base = CFG["vs_url"].rstrip("/")
+        try:
+            r = httpx.get(f"{base}/v1/audio/voices", timeout=8)
+        except Exception:
+            return {"ok": False, "error": "VoiceStudio לא פתוח. תפתח את האפליקציה ונסה שוב."}
+        if r.status_code != 200:
+            return {"ok": False, "error": f"VoiceStudio ענה {r.status_code}"}
+        try:
+            d = r.json()
+        except Exception:
+            d = []
+        items = d if isinstance(d, list) else d.get("voices") or d.get("data") or d.get("profiles") or []
+        voices = [{"id": "default", "name": "ברירת מחדל"}]
+        for v in items:
+            if isinstance(v, str):
+                voices.append({"id": v, "name": v})
+            elif isinstance(v, dict):
+                vid = v.get("id") or v.get("voice_id") or v.get("profile_id") or v.get("name")
+                if vid and vid != "default":
+                    voices.append({"id": str(vid), "name": str(v.get("name") or vid)})
+        return {"ok": True, "voices": voices}
 
     def send_text(self, text):
         if text and text.strip():

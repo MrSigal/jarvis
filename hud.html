@@ -264,12 +264,25 @@ body.speaking .core{animation:talk .35s ease-in-out infinite alternate}
 
     <div class="field">
       <label>2 · קול</label>
-      <div class="help">קולות חינמיים בעברית, בלי חשבון.</div>
-      <div class="row">
+      <div class="help">בחר מנוע קול. VoiceStudio עובד רק כשהאפליקציה שלו פתוחה במחשב. אם הוא לא עונה, ג'רוויס חוזר לקול הרגיל.</div>
+      <div class="row" style="margin-bottom:8px">
+        <select id="sEngine">
+          <option value="edge">קול רגיל — מהיר, מובנה</option>
+          <option value="voicestudio">VoiceStudio — על המחשב</option>
+        </select>
+      </div>
+      <div class="row" id="edgeRow">
         <select id="sVoice">
           <option value="he-IL-AvriNeural">אברי — קול גברי</option>
           <option value="he-IL-HilaNeural">הילה — קול נשי</option>
         </select>
+      </div>
+      <div class="row" id="vsRow" style="display:none">
+        <select id="sVsVoice"><option value="default">ברירת מחדל</option></select>
+        <button class="btn ghost" id="vsConnect" style="flex:0 0 auto">חבר</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div id="vsMsg" style="font-size:14px;align-self:center"></div>
         <button class="btn ghost" id="testVoice" style="flex:0 0 auto">נסה</button>
       </div>
     </div>
@@ -395,6 +408,11 @@ document.querySelectorAll('[data-link]').forEach(a => a.onclick = () => api() &&
 function openSettings(cfg){
   $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'שמור ' + cfg.claude_mask + ' (השאר ריק כדי לא לשנות)' : 'sk-ant-…';
   if (cfg.voice) $('#sVoice').value = cfg.voice;
+  $('#sEngine').value = cfg.tts_engine || 'edge';
+  if (cfg.vs_voice && ![...$('#sVsVoice').options].some(o => o.value === cfg.vs_voice))
+    $('#sVsVoice').insertAdjacentHTML('beforeend', `<option value="${cfg.vs_voice}">${cfg.vs_voice}</option>`);
+  $('#sVsVoice').value = cfg.vs_voice || 'default';
+  showEngine();
   $('#sName').value = cfg.user_name || 'אדוני';
   $('#sSens').value = cfg.wake_threshold; $('#sensVal').textContent = cfg.wake_threshold;
   $('#saveMsg').textContent = '';
@@ -403,11 +421,28 @@ function openSettings(cfg){
 $('#sSens').oninput = e => $('#sensVal').textContent = e.target.value;
 $('#openSettings').onclick = async () => openSettings(await api().get_settings());
 $('#closeSettings').onclick = () => $('#settings').classList.remove('open');
+function showEngine(){
+  const vs = $('#sEngine').value === 'voicestudio';
+  $('#edgeRow').style.display = vs ? 'none' : 'flex';
+  $('#vsRow').style.display = vs ? 'flex' : 'none';
+  $('#vsMsg').textContent = '';
+}
+$('#sEngine').onchange = () => { showEngine(); if ($('#sEngine').value === 'voicestudio') $('#vsConnect').click(); };
+$('#vsConnect').onclick = async () => {
+  $('#vsMsg').innerHTML = '<span>מתחבר ל־VoiceStudio…</span>';
+  const r = await api().vs_check();
+  if (!r.ok){ $('#vsMsg').innerHTML = `<span class="bad">${r.error}</span>`; return; }
+  const cur = $('#sVsVoice').value;
+  $('#sVsVoice').innerHTML = r.voices.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
+  if ([...$('#sVsVoice').options].some(o => o.value === cur)) $('#sVsVoice').value = cur;
+  $('#vsMsg').innerHTML = `<span class="ok">✔ מחובר. נמצאו ${r.voices.length} קולות.</span>`;
+};
 $('#testVoice').onclick = async () => { await save(true); api().test_voice(); };
 async function save(quiet){
   $('#saveMsg').innerHTML = '<span>מתחבר…</span>';
   const r = await api().save_settings({
     claude_key: $('#sClaude').value, voice: $('#sVoice').value,
+    tts_engine: $('#sEngine').value, vs_voice: $('#sVsVoice').value,
     user_name: $('#sName').value, wake_threshold: $('#sSens').value
   });
   if (r.claude === 'ok') $('#saveMsg').innerHTML = '<span class="ok">✔ נשמר. המוח מחובר.</span>';
