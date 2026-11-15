@@ -53,6 +53,7 @@ jobs:
           --collect-submodules pygame
           --hidden-import pyautogui
           --hidden-import pystray._win32
+          --collect-submodules qrcode
           --hidden-import pyperclip
           jarvis.py
 

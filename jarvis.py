@@ -31,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "4.4"
+VERSION = "4.5"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -75,6 +75,8 @@ DEFAULT_CONFIG = {
     "greenapi_token": "",
     "whatsapp_phone": "",                   # +972...
     "whatsapp_apikey": "",
+    "phone_secret": "",                     # pairing code for the iPhone app (created automatically)
+    "phone_link": True,
     "mail_address": "",                     # Gmail address (IMAP)
     "mail_app_password": "",                # Google app password (myaccount.google.com/apppasswords)
     "mail_imap_host": "",                   # empty = detected from the address
@@ -119,6 +121,9 @@ def load_config():
         cfg["user_name"] = "אדוני"
     if cfg.get("min_confidence", 0.35) > 0.35:
         cfg["min_confidence"] = 0.35                       # Hebrew gets lower confidence scores
+    if not cfg.get("phone_secret"):
+        import secrets
+        cfg["phone_secret"] = secrets.token_urlsafe(18)
     if cfg.get("follow_up_seconds", 25) < 15:              # v4.3: conversation mode
         cfg["follow_up_seconds"] = 25
     if cfg.get("claude_model") == "claude-sonnet-5-5":   # move old installs to the cheap model
@@ -1369,6 +1374,103 @@ class Mail:
 MAIL = Mail()
 
 
+# ======================================================================= iPHONE LINK (encrypted, through ntfy.sh)
+PHONE_APP_URL = "https://mrsigal.github.io/jarvis/"
+
+
+class PhoneLink:
+    """The iPhone app talks to this PC through ntfy.sh topics. Everything is AES-GCM encrypted with a key
+    derived from the pairing secret, so ntfy only ever sees random bytes; the topic name is a hash of it."""
+    def __init__(self):
+        self.answer = None          # set by the assistant: fn(text) -> reply text
+        self._load()
+
+    def _load(self):
+        import hashlib
+        sec = CFG["phone_secret"]
+        self.topic = "jarvis-" + hashlib.sha256(sec.encode()).hexdigest()[:24]
+        self.key = hashlib.sha256(("jarvis-key:" + sec).encode()).digest()
+
+    def pair_url(self):
+        return f"{PHONE_APP_URL}#k={CFG['phone_secret']}"
+
+    def qr_data_uri(self):
+        import qrcode, base64
+        img = qrcode.make(self.pair_url(), box_size=8, border=2)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    def new_secret(self):
+        import secrets
+        CFG["phone_secret"] = secrets.token_urlsafe(18)
+        save_config()
+        self._load()
+        self.restart = True
+
+    def seal(self, obj):
+        import base64, os as _os
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        iv = _os.urandom(12)
+        return base64.b64encode(iv + AESGCM(self.key).encrypt(iv, json.dumps(obj, ensure_ascii=False).encode(), None)).decode()
+
+    def open(self, s):
+        import base64
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        raw = base64.b64decode(s)
+        return json.loads(AESGCM(self.key).decrypt(raw[:12], raw[12:], None))
+
+    def reply(self, obj):
+        import httpx
+        httpx.post(f"https://ntfy.sh/{self.topic}-r", content=self.seal(obj), timeout=20)
+
+    def handle(self, m):
+        if time.time() - float(m.get("ts", 0)) > 180:
+            return                                   # stale message (e.g. replayed after a reconnect)
+        if m.get("type") == "ping":
+            self.reply({"type": "pong", "version": VERSION})
+        elif m.get("type") == "ask" and self.answer:
+            text = (m.get("text") or "").strip()[:1000]
+            try:
+                ans = self.answer(text)
+            except Exception as e:
+                log.exception("phone ask")
+                ans = f"שגיאה: {e}"
+            self.reply({"type": "answer", "id": m.get("id"), "text": (ans or "")[:1200]})
+
+    def loop(self):
+        import httpx
+        delay = 3
+        while True:
+            if not CFG.get("phone_link", True):
+                time.sleep(10)
+                continue
+            self.restart = False
+            try:
+                with httpx.stream("GET", f"https://ntfy.sh/{self.topic}-c/json", timeout=httpx.Timeout(10, read=90)) as r:
+                    delay = 3
+                    for line in r.iter_lines():
+                        if self.restart:
+                            break
+                        if not line:
+                            continue
+                        try:
+                            ev = json.loads(line)
+                            if ev.get("event") != "message":
+                                continue
+                            msg = self.open(ev["message"])
+                        except Exception:
+                            continue                 # not ours / tampered
+                        threading.Thread(target=self.handle, args=(msg,), daemon=True).start()
+            except Exception as e:
+                log.info(f"phone link reconnect: {e}")
+            time.sleep(delay)
+            delay = min(60, delay * 2)
+
+
+PHONE = PhoneLink()
+
+
 class Memory:
     """Facts the user asked JARVIS to remember."""
     def __init__(self):
@@ -1833,6 +1935,7 @@ STOP_PHRASES = ("זהו", "זה הכל", "זה הכול", "תודה זהו", "ז
 
 class Assistant:
     def __init__(self):
+        self.brain_lock = threading.Lock()
         self.timers = Timers()
         self.reminders = None
         self.speaker = None
@@ -1861,6 +1964,8 @@ class Assistant:
         global REMINDERS
         REMINDERS = self.reminders = Reminders(self.timers.events)
         threading.Thread(target=MAIL.loop, daemon=True).start()
+        PHONE.answer = self.answer_text
+        threading.Thread(target=PHONE.loop, daemon=True).start()
         threading.Thread(target=self.run, daemon=True).start()
         threading.Thread(target=self.stats_loop, daemon=True).start()
         threading.Thread(target=self.timer_loop, daemon=True).start()
@@ -1962,6 +2067,23 @@ class Assistant:
             return None
         return None
 
+    def answer_text(self, text):
+        """A request that came from the iPhone app: answer in text (nothing is spoken on the PC)."""
+        ui.say("user", "📱 " + text)
+        with self.brain_lock:
+            ans = None
+            try:
+                ans = self.quick_command(text)
+            except Exception:
+                log.exception("quick (phone)")
+            if ans is None:
+                ans = self.brain.ask(text)
+        import re as _re
+        ans = _re.sub(r"\[[^\]]*\]|[*#_`>]", "", ans or "").strip()
+        if ans:
+            ui.say("jarvis", ans)
+        return ans
+
     def think(self, text):
         if not hebrew_only(text):
             ui.toast("אני מבין רק עברית.", "warn")
@@ -1975,7 +2097,8 @@ class Assistant:
             log.exception("quick")
         if answer is None:
             try:
-                answer = self.brain.ask(text)
+                with self.brain_lock:
+                    answer = self.brain.ask(text)
             except Exception as e:
                 log.exception("brain")
                 msg = str(e)
@@ -2201,6 +2324,24 @@ class Api:
         assistant.build_brain()
         return result
 
+    def phone_pair(self, regenerate=False):
+        if regenerate:
+            PHONE.new_secret()
+        try:
+            qr = PHONE.qr_data_uri()
+        except Exception as e:
+            qr = ""
+            log.error(f"qr: {e}")
+        return {"url": PHONE.pair_url(), "qr": qr}
+
+    def copy_text(self, text):
+        try:
+            import pyperclip
+            pyperclip.copy(text)
+            return True
+        except Exception:
+            return False
+
     def mail_test(self):
         if not MAIL.configured():
             return {"ok": False, "error": "צריך כתובת מייל וסיסמת אפליקציה."}
@@ -2398,7 +2539,7 @@ def selftest():
     step("hud.html", lambda: (HERE / "hud.html").read_text(encoding="utf-8")[:10])
     step("tray icon image", lambda: (HERE / "assets" / "jarvis.ico").read_bytes()[:4])
     for mod in ("numpy", "sounddevice", "speech_recognition", "edge_tts", "pygame", "webview", "anthropic",
-                "httpx", "psutil", "pyautogui", "pyperclip", "onnxruntime", "pystray", "PIL"):
+                "httpx", "psutil", "pyautogui", "pyperclip", "onnxruntime", "pystray", "PIL", "cryptography", "qrcode"):
         step(f"import {mod}", lambda m=mod: __import__(m))
     step("import ddgs", lambda: __import__("ddgs"))
 

@@ -14,3 +14,5 @@ pyperclip
 ddgs
 pystray
 Pillow
+cryptography
+qrcode
