@@ -183,6 +183,40 @@ body.gl .reactor .glow{opacity:.18}
 .subs .fade{opacity:0}
 .corner{display:none}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:var(--cdim)}
+
+/* ===== design 1: Reactor (v6.6) ===== */
+body::before{background:
+   radial-gradient(circle at 50% 44%, rgba(63,217,255,.16), transparent 55%),
+   repeating-linear-gradient(0deg, rgba(63,217,255,.05) 0 1px, transparent 1px 44px),
+   repeating-linear-gradient(90deg, rgba(63,217,255,.05) 0 1px, transparent 1px 44px)}
+body::after{opacity:.35}
+#core3d{display:none!important}
+.app{grid-template-rows:72px 1fr 112px}
+.top{border-bottom:0;background:none;padding:0 34px}
+.logo{font-size:24px;letter-spacing:.42em}
+.logo small{font-size:10px;letter-spacing:.38em;margin-top:4px}
+.stats{display:flex;gap:22px;font-size:12px;color:var(--muted);padding-inline-start:26px;border-inline-start:1px solid var(--cdim)}
+.stats b{font-family:Orbitron;font-weight:500;font-size:14px;color:var(--c2);margin-inline-start:4px}
+.ind{height:30px;padding:0 12px;border-radius:15px;border:1px solid var(--cdim);background:var(--cfaint)}
+.iconbtn{width:40px;height:40px}
+.reactor{width:min(52vh,420px);height:min(52vh,420px)}
+.rx .glowring{filter:drop-shadow(0 0 6px var(--accent))}
+.glow{inset:30%;opacity:.4}
+#stateLabel{display:flex;align-items:center;gap:14px;font-size:14px!important;letter-spacing:.45em!important;margin-top:22px}
+#stateLabel::before,#stateLabel::after{content:"";width:60px;height:1px;background:var(--accent);opacity:.55}
+#subJarvis{font-size:24px;font-weight:400}
+#subUser{font-weight:300;color:#8FB7C4}
+.corner{width:30px;height:30px;border-color:var(--c);opacity:.7}
+.corner.tl,.corner.tr,.corner.bl,.corner.br{border-width:2px 2px 0 0}
+.corner.tl{border-width:2px 0 0 2px;top:14px;left:14px}.corner.tr{border-width:2px 2px 0 0;top:14px;right:14px}
+.corner.bl{border-width:0 0 2px 2px;bottom:14px;left:14px}.corner.br{border-width:0 2px 2px 0;bottom:14px;right:14px}
+.bottom{border-top:0;background:none;justify-content:center;padding:0 34px 26px;gap:14px}
+#wave{display:none}
+#cmd{flex:0 1 620px;height:54px;border-radius:27px;clip-path:none;background:rgba(4,19,29,.85);border-color:rgba(63,217,255,.35);font-size:16px;padding:0 24px}
+#talk{width:64px;height:64px;min-width:64px;padding:0;border-radius:32px;justify-content:center;font-size:0;background:rgba(63,217,255,.14);box-shadow:0 0 24px rgba(63,217,255,.35);border-width:1.5px}
+#talk svg{width:26px;height:26px}
+#talk.hot{border-color:var(--amber);color:var(--amber)}
+#stop{width:44px;height:44px;min-width:44px;padding:0;border-radius:22px;justify-content:center}
 </style>
 </head>
 <body class="idle">
@@ -232,39 +266,21 @@ body.gl .reactor .glow{opacity:.18}
       <div class="reactor" id="reactor" title="לחץ כדי לדבר">
         <div class="glow"></div>
         <canvas id="core3d"></canvas>
-        <svg viewBox="-220 -220 440 440">
-          <defs>
-            <radialGradient id="coreGrad">
-              <stop offset="0" stop-color="#ffffff"/>
-              <stop offset=".35" style="stop-color:var(--accent);stop-opacity:.95"/>
-              <stop offset=".75" style="stop-color:var(--accent);stop-opacity:.18"/>
-              <stop offset="1" style="stop-color:var(--accent);stop-opacity:0"/>
-            </radialGradient>
-          </defs>
-          <!-- outer tick ring -->
-          <g class="spin r4" id="ticks"></g>
-          <circle class="stroke" r="200" stroke-width=".6" opacity=".35"/>
-          <!-- outer segmented arcs -->
-          <g class="spin">
-            <circle class="stroke" r="182" stroke-width="7" stroke-dasharray="60 26 18 26" opacity=".75"/>
-          </g>
-          <g class="spin r2">
-            <circle class="stroke" r="160" stroke-width="2" stroke-dasharray="300 80 40 80" opacity=".9"/>
-            <circle class="stroke" r="150" stroke-width="1" stroke-dasharray="2 6" opacity=".6"/>
-          </g>
-          <g class="spin r3">
-            <circle class="stroke" r="128" stroke-width="14" stroke-dasharray="8 12" opacity=".35"/>
-          </g>
-          <g class="spin r4">
-            <circle class="stroke" r="106" stroke-width="3" stroke-dasharray="120 46" opacity=".85"/>
-          </g>
-          <circle class="stroke" r="92" stroke-width="1" opacity=".5"/>
-          <g class="core" id="core">
-            <circle r="86" class="core-fill" opacity=".9"/>
-            <circle class="stroke" r="58" stroke-width="2" opacity=".8"/>
-            <circle class="stroke" r="40" stroke-width="1" opacity=".6"/>
-          </g>
-        </svg>
+<svg class="rx" viewBox="-220 -220 440 440" aria-hidden="true">
+<defs><radialGradient id="rgpc"><stop offset="0" stop-color="#E6FBFF" stop-opacity=".95"/><stop offset=".35" style="stop-color:var(--accent);stop-opacity:.55"/><stop offset="1" style="stop-color:var(--accent);stop-opacity:0"/></radialGradient></defs>
+<circle class="stroke" r="214" stroke-width="1" opacity=".25"/>
+<g class="spin r4"><line class="stroke" stroke-width="1.6" opacity="0.9" x1="210.0" y1="0.0" x2="196.0" y2="0.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="209.7" y1="11.0" x2="203.7" y2="10.7"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="208.8" y1="22.0" x2="202.9" y2="21.3"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="207.4" y1="32.9" x2="201.5" y2="31.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="205.4" y1="43.7" x2="199.5" y2="42.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="202.8" y1="54.4" x2="197.0" y2="52.8"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="199.7" y1="64.9" x2="194.0" y2="63.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="196.1" y1="75.3" x2="190.5" y2="73.1"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="191.8" y1="85.4" x2="186.4" y2="83.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="187.1" y1="95.3" x2="181.8" y2="92.6"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="181.9" y1="105.0" x2="169.7" y2="98.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="176.1" y1="114.4" x2="171.1" y2="111.1"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="169.9" y1="123.4" x2="165.0" y2="119.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="163.2" y1="132.2" x2="158.5" y2="128.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="156.1" y1="140.5" x2="151.6" y2="136.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="148.5" y1="148.5" x2="144.2" y2="144.2"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="140.5" y1="156.1" x2="136.5" y2="151.6"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="132.2" y1="163.2" x2="128.4" y2="158.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="123.4" y1="169.9" x2="119.9" y2="165.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="114.4" y1="176.1" x2="111.1" y2="171.1"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="105.0" y1="181.9" x2="98.0" y2="169.7"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="95.3" y1="187.1" x2="92.6" y2="181.8"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="85.4" y1="191.8" x2="83.0" y2="186.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="75.3" y1="196.1" x2="73.1" y2="190.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="64.9" y1="199.7" x2="63.0" y2="194.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="54.4" y1="202.8" x2="52.8" y2="197.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="43.7" y1="205.4" x2="42.4" y2="199.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="32.9" y1="207.4" x2="31.9" y2="201.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="22.0" y1="208.8" x2="21.3" y2="202.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="11.0" y1="209.7" x2="10.7" y2="203.7"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="0.0" y1="210.0" x2="0.0" y2="196.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-11.0" y1="209.7" x2="-10.7" y2="203.7"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-22.0" y1="208.8" x2="-21.3" y2="202.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-32.9" y1="207.4" x2="-31.9" y2="201.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-43.7" y1="205.4" x2="-42.4" y2="199.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-54.4" y1="202.8" x2="-52.8" y2="197.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-64.9" y1="199.7" x2="-63.0" y2="194.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-75.3" y1="196.1" x2="-73.1" y2="190.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-85.4" y1="191.8" x2="-83.0" y2="186.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-95.3" y1="187.1" x2="-92.6" y2="181.8"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="-105.0" y1="181.9" x2="-98.0" y2="169.7"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-114.4" y1="176.1" x2="-111.1" y2="171.1"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-123.4" y1="169.9" x2="-119.9" y2="165.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-132.2" y1="163.2" x2="-128.4" y2="158.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-140.5" y1="156.1" x2="-136.5" y2="151.6"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-148.5" y1="148.5" x2="-144.2" y2="144.2"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-156.1" y1="140.5" x2="-151.6" y2="136.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-163.2" y1="132.2" x2="-158.5" y2="128.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-169.9" y1="123.4" x2="-165.0" y2="119.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-176.1" y1="114.4" x2="-171.1" y2="111.1"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="-181.9" y1="105.0" x2="-169.7" y2="98.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-187.1" y1="95.3" x2="-181.8" y2="92.6"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-191.8" y1="85.4" x2="-186.4" y2="83.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-196.1" y1="75.3" x2="-190.5" y2="73.1"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-199.7" y1="64.9" x2="-194.0" y2="63.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-202.8" y1="54.4" x2="-197.0" y2="52.8"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-205.4" y1="43.7" x2="-199.5" y2="42.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-207.4" y1="32.9" x2="-201.5" y2="31.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-208.8" y1="22.0" x2="-202.9" y2="21.3"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-209.7" y1="11.0" x2="-203.7" y2="10.7"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="-210.0" y1="0.0" x2="-196.0" y2="0.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-209.7" y1="-11.0" x2="-203.7" y2="-10.7"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-208.8" y1="-22.0" x2="-202.9" y2="-21.3"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-207.4" y1="-32.9" x2="-201.5" y2="-31.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-205.4" y1="-43.7" x2="-199.5" y2="-42.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-202.8" y1="-54.4" x2="-197.0" y2="-52.8"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-199.7" y1="-64.9" x2="-194.0" y2="-63.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-196.1" y1="-75.3" x2="-190.5" y2="-73.1"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-191.8" y1="-85.4" x2="-186.4" y2="-83.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-187.1" y1="-95.3" x2="-181.8" y2="-92.6"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="-181.9" y1="-105.0" x2="-169.7" y2="-98.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-176.1" y1="-114.4" x2="-171.1" y2="-111.1"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-169.9" y1="-123.4" x2="-165.0" y2="-119.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-163.2" y1="-132.2" x2="-158.5" y2="-128.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-156.1" y1="-140.5" x2="-151.6" y2="-136.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-148.5" y1="-148.5" x2="-144.2" y2="-144.2"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-140.5" y1="-156.1" x2="-136.5" y2="-151.6"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-132.2" y1="-163.2" x2="-128.4" y2="-158.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-123.4" y1="-169.9" x2="-119.9" y2="-165.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-114.4" y1="-176.1" x2="-111.1" y2="-171.1"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="-105.0" y1="-181.9" x2="-98.0" y2="-169.7"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-95.3" y1="-187.1" x2="-92.6" y2="-181.8"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-85.4" y1="-191.8" x2="-83.0" y2="-186.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-75.3" y1="-196.1" x2="-73.1" y2="-190.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-64.9" y1="-199.7" x2="-63.0" y2="-194.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-54.4" y1="-202.8" x2="-52.8" y2="-197.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-43.7" y1="-205.4" x2="-42.4" y2="-199.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-32.9" y1="-207.4" x2="-31.9" y2="-201.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-22.0" y1="-208.8" x2="-21.3" y2="-202.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="-11.0" y1="-209.7" x2="-10.7" y2="-203.7"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="-0.0" y1="-210.0" x2="-0.0" y2="-196.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="11.0" y1="-209.7" x2="10.7" y2="-203.7"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="22.0" y1="-208.8" x2="21.3" y2="-202.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="32.9" y1="-207.4" x2="31.9" y2="-201.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="43.7" y1="-205.4" x2="42.4" y2="-199.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="54.4" y1="-202.8" x2="52.8" y2="-197.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="64.9" y1="-199.7" x2="63.0" y2="-194.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="75.3" y1="-196.1" x2="73.1" y2="-190.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="85.4" y1="-191.8" x2="83.0" y2="-186.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="95.3" y1="-187.1" x2="92.6" y2="-181.8"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="105.0" y1="-181.9" x2="98.0" y2="-169.7"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="114.4" y1="-176.1" x2="111.1" y2="-171.1"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="123.4" y1="-169.9" x2="119.9" y2="-165.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="132.2" y1="-163.2" x2="128.4" y2="-158.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="140.5" y1="-156.1" x2="136.5" y2="-151.6"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="148.5" y1="-148.5" x2="144.2" y2="-144.2"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="156.1" y1="-140.5" x2="151.6" y2="-136.5"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="163.2" y1="-132.2" x2="158.5" y2="-128.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="169.9" y1="-123.4" x2="165.0" y2="-119.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="176.1" y1="-114.4" x2="171.1" y2="-111.1"/><line class="stroke" stroke-width="1.6" opacity="0.9" x1="181.9" y1="-105.0" x2="169.7" y2="-98.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="187.1" y1="-95.3" x2="181.8" y2="-92.6"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="191.8" y1="-85.4" x2="186.4" y2="-83.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="196.1" y1="-75.3" x2="190.5" y2="-73.1"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="199.7" y1="-64.9" x2="194.0" y2="-63.0"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="202.8" y1="-54.4" x2="197.0" y2="-52.8"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="205.4" y1="-43.7" x2="199.5" y2="-42.4"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="207.4" y1="-32.9" x2="201.5" y2="-31.9"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="208.8" y1="-22.0" x2="202.9" y2="-21.3"/><line class="stroke" stroke-width="0.9" opacity="0.45" x1="209.7" y1="-11.0" x2="203.7" y2="-10.7"/></g>
+<g class="spin"><path class="stroke" d="M32.0 -181.2 A184 184 0 0 1 141.0 118.3" stroke-width="4" opacity="1" stroke-linecap="round"/><path class="stroke" d="M-32.0 181.2 A184 184 0 0 1 -172.9 62.9" stroke-width="4" opacity="0.6" stroke-linecap="round"/><path class="stroke" d="M-172.9 -62.9 A184 184 0 0 1 -62.9 -172.9" stroke-width="4" opacity="1" stroke-linecap="round"/></g>
+<g class="spin r2"><circle class="stroke" r="158" stroke-width="1" stroke-dasharray="2 7" opacity=".45"/></g>
+<circle class="stroke" r="130" stroke-width="12" opacity=".16"/>
+<g class="spin r3"><path class="stroke" d="M130.0 0.0 A130 130 0 0 1 120.5 48.7" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M91.9 91.9 A130 130 0 0 1 50.8 119.7" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M0.0 130.0 A130 130 0 0 1 -48.7 120.5" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M-91.9 91.9 A130 130 0 0 1 -119.7 50.8" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M-130.0 0.0 A130 130 0 0 1 -120.5 -48.7" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M-91.9 -91.9 A130 130 0 0 1 -50.8 -119.7" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M-0.0 -130.0 A130 130 0 0 1 48.7 -120.5" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M91.9 -91.9 A130 130 0 0 1 119.7 -50.8" stroke-width="12" opacity="0.8" stroke-linecap="round"/></g>
+<circle class="stroke glowring" r="102" stroke-width="2"/>
+<g class="core">
+<circle r="74" fill="url(#rgpc)"/>
+<circle r="44" fill="#04131D" class="stroke glowring" stroke-width="2.5"/>
+<text y="6" text-anchor="middle" font-family="Orbitron, sans-serif" font-weight="800" font-size="15" letter-spacing="3.5" fill="#E6FBFF">G.I.L.I</text>
+</g>
+</svg>
       </div>
       <div id="stateLabel">מאתחל</div>
       <div id="hint">תגיד "היי ג'רוויס" או לחץ על העיגול</div>
@@ -497,7 +513,7 @@ const api = () => window.pywebview && window.pywebview.api;
 
 /* ---------- build tick ring */
 (() => {
-  const g = $('#ticks'); let h = '';
+  const g = $('#ticks'); if (!g) return; let h = '';
   for (let i = 0; i < 120; i++) {
     const a = i * 3 * Math.PI / 180, long = i % 10 === 0;
     const r1 = 206, r2 = long ? 218 : 212;
@@ -538,8 +554,8 @@ function drawWave(){
 drawWave();
 
 /* ---------- HUD API called from Python */
-const LABELS = {idle:'בהמתנה', listening:'מקשיב', thinking:'חושב', speaking:'מדבר'};
-const HINTS = {idle:'תגיד "היי ג\'רוויס" או לחץ על העיגול', listening:'אני מקשיבה…', thinking:'עובד על זה…', speaking:'לחץ ■ כדי לעצור'};
+const LABELS = {idle:'בהמתנה', listening:'מקשיבה', thinking:'חושבת', speaking:'מדברת'};
+const HINTS = {idle:'תגיד "היי ג\'רוויס" או לחץ על העיגול', listening:'אני מקשיבה…', thinking:'עובדת על זה…', speaking:'לחץ ■ כדי לעצור'};
 window.hud = {
   replayBoot(){ runBoot(); },
   setState(s){
@@ -848,7 +864,7 @@ runBoot();
   const U = n => gl.getUniformLocation(prog, n);
   const uColor = U('uColor'), uHot = U('uHot'), uLevel = U('uLevel'), uPhase = U('uPhase'), uOpen = U('uOpen'), uZoom = U('uZoom');
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
-  document.body.classList.add('gl');
+  /* design 1 (Reactor): the SVG reactor is shown instead of the shader */
   const COLORS = {idle:[[.10,.77,.77],[.79,.99,1]], listening:[[1,.62,.15],[1,.95,.82]],
                   thinking:[[.25,.85,1],[.9,1,1]], speaking:[[.12,.82,.9],[.85,1,1]]};
   let col = [.10,.77,.77], hot = [.79,.99,1], phase = 0, level = 0, open = 0, last = performance.now();
