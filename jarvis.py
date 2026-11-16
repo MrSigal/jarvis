@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "7.2"
+VERSION = "7.3"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -821,6 +821,7 @@ class Ears:
         except Exception:
             pass
         self.ww.reset()
+        self._gili_reset()
 
     def heard_wake_word(self, chunk):
         self.learn_noise()
@@ -829,6 +830,68 @@ class Ears:
             self.ww.reset()
             return True
         return False
+
+    # ---- "היי גילי": there is no ready-made model for this name, so short phrases are checked by Hebrew speech recognition
+    GILI_RE = re.compile(r"(?:^|[\s,.!?])(?:היי|הי|הֵי|הַי|hey)?[\s,]*(גילי|ג'ילי|גִּילִי|גילִי|gili|gilly|gilli)(?=$|[\s,.!?])", re.I)
+
+    def _gili_reset(self):
+        from collections import deque
+        self._g_pre = deque(maxlen=4)
+        self._g_recent = deque(maxlen=3)
+        self._g_frames, self._g_on, self._g_voiced, self._g_silent = [], False, 0, 0.0
+
+    def heard_gili(self, chunk):
+        """Feed one 80ms chunk. Returns None while waiting, or the words said after "גילי" ("" if only the name)."""
+        if not hasattr(self, "_g_pre"):
+            self._gili_reset()
+        self.learn_noise()
+        p = self.speech_prob(chunk)
+        thr = min(0.8, max(0.2, 1.0 - float(CFG.get("wake_threshold", 0.5))))
+        step = CHUNK / SAMPLE_RATE
+        if not self._g_on:
+            self._g_pre.append(chunk)
+            self._g_recent.append(p >= thr)
+            if sum(self._g_recent) >= 2:
+                self._g_on = True
+                self._g_frames = list(self._g_pre)
+                self._g_voiced = 2
+            return None
+        self._g_frames.append(chunk)
+        if p >= thr * 0.7:
+            self._g_voiced += 1
+            self._g_silent = 0.0
+        else:
+            self._g_silent += step
+        length = len(self._g_frames) * step
+        if self._g_silent < 0.6 and length < 7.0:
+            return None
+        frames, voiced = self._g_frames, self._g_voiced
+        self._gili_reset()
+        if voiced < 4:                                     # a cough or a click: not a call
+            return None
+        text = self._wake_text(self.np.concatenate(frames).tobytes())
+        if not text:
+            return None
+        m = self.GILI_RE.search(text)
+        if not m or len(text[:m.start()].split()) > 2:     # the name has to come at the start
+            return None
+        log.info(f"wake: {text}")
+        rest = text[m.end():].strip(" ,.!?")
+        return rest if len(re.findall(r"[\u05d0-\u05ea]", rest)) >= 2 else ""
+
+    def _wake_text(self, pcm):
+        """All the ways Google heard the phrase, joined (so 'גילי' is caught even if it's not the top guess)."""
+        try:
+            res = self.rec.recognize_google(self.sr.AudioData(pcm, SAMPLE_RATE, 2), language="he-IL", show_all=True)
+            alts = res.get("alternative", []) if isinstance(res, dict) else []
+            texts = [a.get("transcript", "") for a in alts if a.get("transcript")]
+            hit = next((t for t in texts if self.GILI_RE.search(t)), None)
+            return hit or (texts[0] if texts else "")
+        except self.sr.UnknownValueError:
+            return ""
+        except Exception as e:
+            log.warning(f"wake check: {e}")
+            return ""
 
     def beep(self, freq=1046, dur=0.09):
         np = self.np
@@ -2992,7 +3055,7 @@ def voice_is_female():
 
 def system_prompt():
     facts = MEMORY.prompt_block()
-    return f"""Your name is גילי (G.I.L.I.) - you are the user's personal AI (you used to be called Jarvis; the wake phrase is still "היי ג'רוויס"), running on their own computer in Israel. Personality: the AI from the films - precise, loyal, genuinely smart - but warm, upbeat and cheerful: happy to help, light humour, a smile in the voice. Never gloomy or flat. Talk like a real Israeli woman in a natural conversation: full, flowing sentences with normal punctuation (commas, periods), no lists, no symbols, no emojis, no headings - so it sounds human when read aloud.
+    return f"""Your name is גילי (G.I.L.I.) - you are the user's personal AI (you used to be called Jarvis; the wake phrase is "היי גילי"), running on their own computer in Israel. Personality: the AI from the films - precise, loyal, genuinely smart - but warm, upbeat and cheerful: happy to help, light humour, a smile in the voice. Never gloomy or flat. Talk like a real Israeli woman in a natural conversation: full, flowing sentences with normal punctuation (commas, periods), no lists, no symbols, no emojis, no headings - so it sounds human when read aloud.
 
 CONVERSATION: You are not just a command executor - you are a real conversation partner. Chat naturally, answer questions properly, share a brief opinion when asked, joke lightly, and follow the thread of the conversation (refer back to what was said earlier). The user may speak in several sentences with pauses - treat the whole message as one thought. If something is unclear, ask one short question.
 
@@ -3650,8 +3713,9 @@ class Assistant:
                 if self.ears:
                     return "voice", None
             if self.ears:
-                if self.ears.heard_wake_word(self.ears.read()):
-                    return "voice", None
+                said = self.ears.heard_gili(self.ears.read())
+                if said is not None:
+                    return "wake", said
             else:
                 time.sleep(0.1)
 
@@ -3685,17 +3749,19 @@ class Assistant:
         while True:
             kind, payload = self.wait_trigger()
             popped = False
-            if kind == "voice" and not getattr(ui, "visible", True):
+            if kind in ("voice", "wake") and not getattr(ui, "visible", True):
                 popped = ui.show_window()            # woken while hidden -> show the window
             self.cancel_hide()
             if kind == "text":
                 self.think(payload)
                 continue
-            self.ears.beep()
+            said_now = payload if kind == "wake" else ""
+            if not said_now:
+                self.ears.beep()
             # Conversation mode: after "Hey Jarvis" keep listening; it ends after a quiet stretch or "זהו".
             window = float(CFG.get("follow_up_seconds", 25))
             last = time.time()
-            q = self.ears.listen(start_timeout=8)
+            q = said_now or self.ears.listen(start_timeout=8)   # "היי גילי, תפתח כרום" in one breath works too
             ui.js("conversation", True)
             while True:
                 if q:
@@ -4142,7 +4208,7 @@ def start_tray():
         def quit_(icon, item):
             icon.stop()
             os._exit(0)
-        icon = pystray.Icon("JARVIS", img, "G.I.L.I - מאזינה ל\"היי ג'רוויס\"",
+        icon = pystray.Icon("JARVIS", img, "G.I.L.I - מאזינה ל\"היי גילי\"",
                             menu=pystray.Menu(pystray.MenuItem("פתח את גילי", open_, default=True),
                                               pystray.MenuItem("יציאה", quit_)))
         icon.run_detached()
