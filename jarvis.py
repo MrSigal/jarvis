@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "5.7"
+VERSION = "5.8"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -47,6 +47,7 @@ LOG_FILE = DATA_DIR / "jarvis.log"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 MEMORY_FILE = DATA_DIR / "memory.json"
 MAIL_STATE_FILE = DATA_DIR / "mail_state.json"
+OPEN_SIGNAL = DATA_DIR / "open.signal"       # a second launch (desktop icon) asks the running JARVIS to open up
 REMINDERS = None
 BACKGROUND_START = "--background" in sys.argv
 OS = platform.system()
@@ -156,6 +157,10 @@ def unprotect_secret(value):
         return ""
 
 
+FEMALE_GEMINI = {"Kore", "Aoede", "Leda", "Zephyr", "Autonoe", "Callirrhoe", "Despina", "Erinome", "Laomedeia",
+                 "Achernar", "Gacrux", "Pulcherrima", "Sulafat", "Vindemiatrix"}
+
+
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
     if CONFIG_FILE.exists():
@@ -186,6 +191,11 @@ def load_config():
     if not cfg.get("phone_secret"):
         import secrets
         cfg["phone_secret"] = secrets.token_urlsafe(18)
+    if not cfg.get("_female_voice_v58"):                    # v5.8: the user asked for a woman's voice
+        cfg["_female_voice_v58"] = True
+        cfg["voice"] = "he-IL-HilaNeural"
+        if cfg.get("gemini_voice") not in FEMALE_GEMINI:
+            cfg["gemini_voice"] = "Kore"
     if cfg.get("follow_up_seconds", 25) < 15:              # v4.3: conversation mode
         cfg["follow_up_seconds"] = 25
     if cfg.get("claude_model") == "claude-sonnet-5-5":   # move old installs to the cheap model
@@ -364,9 +374,12 @@ def play_intro(pygame):
     secs = float(CFG.get("intro_seconds", 12) or 12)
     try:
         if CFG.get("intro_mode", "builtin") == "file" and path and os.path.isfile(path):
-            snd = pygame.mixer.Sound(path)
-            snd.play(fade_ms=300, maxtime=int(secs * 1000) + 15000)
-            return snd, min(5.0, snd.get_length() * 0.6, secs)
+            try:
+                snd = pygame.mixer.Sound(path)
+                snd.play(fade_ms=300, maxtime=int(secs * 1000) + 15000)
+                return snd, min(5.0, snd.get_length() * 0.6, secs)
+            except Exception as e:                 # the song can't be played -> use the built-in sound
+                log.warning(f"intro song {path}: {e}")
         snd = pygame.mixer.Sound(file=BytesIO(make_intro_wav()))
         snd.play()
         return snd, 4.4                          # right after the final chord hits
@@ -2693,6 +2706,12 @@ ACTION_LABELS = {
 }
 
 
+def voice_is_female():
+    if CFG.get("tts_engine") == "gemini":
+        return CFG.get("gemini_voice") in FEMALE_GEMINI
+    return "Hila" in (CFG.get("voice") or "")
+
+
 def system_prompt():
     facts = MEMORY.prompt_block()
     return f"""You are J.A.R.V.I.S., the user's personal AI, running on their own computer in Israel. Personality: the AI butler from the films - calm, precise, loyal, quietly witty, genuinely smart.
@@ -2702,7 +2721,7 @@ CONVERSATION: You are not just a command executor - you are a real conversation 
 What you remember about the user (numbered; this is YOUR long-term memory - use it naturally whenever it's relevant, without saying "according to my memory"):
 {facts}
 
-LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern Israeli Hebrew (never English, never translated-sounding). Speak about yourself in masculine form. Call the user "{CFG['user_name']}" now and then.
+LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern Israeli Hebrew (never English, never translated-sounding). Speak about yourself in {"feminine" if voice_is_female() else "masculine"} form. Call the user "{CFG['user_name']}" now and then.
 
 Rules:
 - Your replies are read aloud by a Hebrew voice. Keep them short (usually one or two sentences). No markdown, lists, emojis, URLs or citations. Write numbers as digits.
@@ -3080,6 +3099,43 @@ class Assistant:
         self.ptt = threading.Event()
         self.busy = False
 
+    def intro_and_greet(self):
+        h = datetime.now().hour
+        part = "בוקר טוב" if 5 <= h < 12 else "צהריים טובים" if h < 17 else "ערב טוב" if h < 22 else "לילה טוב"
+        snd = None
+        try:
+            if CFG.get("intro_music", True):
+                snd, greet_at = play_intro(self.speaker.pygame)
+                time.sleep(greet_at)
+                if snd:
+                    snd.set_volume(0.45)              # music keeps playing, a little quieter, under the voice
+            self.speaker.say(f"{part}, {CFG['user_name']}. כל המערכות פועלות. אני לשירותך.")
+        except Exception:
+            log.exception("greeting")
+        finally:
+            if snd:
+                snd.fadeout(3500)                     # and only now it slowly disappears
+
+    def welcome(self):
+        """The user opened JARVIS (desktop icon / tray) while it was running hidden: loading screen + music."""
+        was_hidden = not getattr(ui, "visible", True)
+        ui.show_window()
+        if not was_hidden or time.time() - getattr(self, "_last_welcome", 0) < 20 or self.speaker.pygame.mixer.music.get_busy():
+            return
+        self._last_welcome = time.time()
+        ui.js("replayBoot")
+        threading.Thread(target=self.intro_and_greet, daemon=True).start()
+
+    def open_signal_loop(self):
+        while True:
+            try:
+                if OPEN_SIGNAL.exists():
+                    OPEN_SIGNAL.unlink()
+                    self.welcome()
+            except Exception as e:
+                log.warning(f"open signal: {e}")
+            time.sleep(0.5)
+
     def ask_brain(self, text):
         """Ask the chosen brain; if it fails (limit, outage), quietly try the other one if it's set up."""
         try:
@@ -3328,18 +3384,10 @@ class Assistant:
             log.exception("ears")
             ui.status({"mic": "offline"})
             ui.toast("המיקרופון לא זמין. אפשר להקליד פקודות.", "error")
-        h = datetime.now().hour
-        part = "בוקר טוב" if 5 <= h < 12 else "צהריים טובים" if h < 17 else "ערב טוב" if h < 22 else "לילה טוב"
         if not BACKGROUND_START:
-            snd = None
-            if CFG.get("intro_music", True):
-                snd, greet_at = play_intro(self.speaker.pygame)
-                time.sleep(greet_at)
-                if snd:
-                    snd.set_volume(0.45)              # music keeps playing, a little quieter, under the voice
-            self.speaker.say(f"{part}, {CFG['user_name']}. כל המערכות פועלות. אני לשירותך.")
-            if snd:
-                snd.fadeout(3500)                     # and only now it slowly disappears
+            self._last_welcome = time.time()
+            self.intro_and_greet()
+        threading.Thread(target=self.open_signal_loop, daemon=True).start()
         def bg_check():
             info = check_update()
             if info.get("available"):
@@ -3695,7 +3743,10 @@ def start_tray():
         img = Image.open(str(HERE / "assets" / "jarvis.ico"))
 
         def open_(icon, item):
-            ui.show_window()
+            try:
+                assistant.welcome()
+            except Exception:
+                ui.show_window()
 
         def quit_(icon, item):
             icon.stop()
@@ -3757,14 +3808,11 @@ def already_running():
 def main():
     import webview
     if already_running():
-        try:
-            import ctypes
-            hwnd = ctypes.windll.user32.FindWindowW(None, "J.A.R.V.I.S")
-            if hwnd:
-                ctypes.windll.user32.ShowWindow(hwnd, 9)
-                ctypes.windll.user32.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
+        if not BACKGROUND_START:
+            try:                                   # ask the running JARVIS to open (with the loading screen + music)
+                OPEN_SIGNAL.write_text("open", encoding="utf-8")
+            except Exception:
+                pass
         return
     if OS == "Windows":
         try:   # own taskbar group/icon instead of Python's

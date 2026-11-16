@@ -523,6 +523,7 @@ drawWave();
 const LABELS = {idle:'בהמתנה', listening:'מקשיב', thinking:'חושב', speaking:'מדבר'};
 const HINTS = {idle:'תגיד "היי ג\'רוויס" או לחץ על העיגול', listening:'אני מקשיב…', thinking:'עובד על זה…', speaking:'לחץ ■ כדי לעצור'};
 window.hud = {
+  replayBoot(){ runBoot(); },
   setState(s){
     document.body.classList.remove('idle', 'listening', 'thinking', 'speaking');
     document.body.classList.add(s);
@@ -699,9 +700,12 @@ $('#updateBtn').onclick = async () => {
   else { hud.toast('עודכן לגרסה ' + r.version + ' - מפעיל מחדש…'); b.firstChild.textContent = 'מפעיל מחדש… '; }
   b.disabled = false;
 };
-/* ---------- boot sequence (stage 1: status bar + log, stage 2: rings + name) */
-(() => {
-  const boot = $('#boot'), segs = $('#bootSegs'), log = $('#bootLog'), pct = $('#bootPct');
+/* ---------- boot sequence (stage 1: status bar + log, stage 2: rings + name); replayed when JARVIS is opened again */
+const BOOT_TPL = $('#boot').cloneNode(true);
+function runBoot(){
+  const old = $('#boot'); if (old) old.remove();
+  const boot = BOOT_TPL.cloneNode(true); document.body.appendChild(boot);
+  const segs = boot.querySelector('#bootSegs'), log = boot.querySelector('#bootLog'), pct = boot.querySelector('#bootPct');
   for (let i = 0; i < 28; i++) segs.appendChild(document.createElement('i'));
   const LINES = ['טוען ליבת מערכת ..................... OK', 'מאתחל זיהוי דיבור .................. OK',
     'מתחבר למוח ......................... OK', 'בודק מיקרופון ...................... OK',
@@ -721,7 +725,8 @@ $('#updateBtn').onclick = async () => {
       boot.classList.add('stage2');
     } else { clearInterval(tick); finish(); }
   }, 50);
-})();
+}
+runBoot();
 
 /* ---------- WebGL reactor: a single polar fragment shader.
    Adapted from the reactor shader in adewaskar/jarvis (MIT licence). */
