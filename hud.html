@@ -388,6 +388,33 @@ body.gl .reactor .glow{opacity:.18}
     </div>
 
     <div class="field">
+      <label>יומן Google (לא חובה)</label>
+      <div class="help">כך ג'רוויס יכול להגיד לך מה יש לך היום, ולהזכיר לך 15 דקות לפני כל פגישה. מעתיקים את <b>הכתובת הסודית בפורמט iCal</b>: <a data-link="https://calendar.google.com/calendar/u/0/r/settings">הגדרות יומן Google</a> ← בצד ימין לוחצים על היומן שלך (השם שלך) ← גוללים כמעט עד הסוף ל"שילוב היומן" ← <b>"כתובת סודית בפורמט iCal"</b> ← מעתיקים ומדביקים כאן. אל תשתף את הכתובת הזו עם אף אחד.</div>
+      <div class="row" style="margin-bottom:6px"><input id="sCal" type="password" placeholder="https://calendar.google.com/calendar/ical/.../basic.ics" dir="ltr"></div>
+      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin:6px 0"><input type="checkbox" id="sCalAlerts" style="width:auto;height:auto"> להזכיר לי 15 דקות לפני כל פגישה (במחשב ובאייפון)</label>
+      <div class="row"><div id="calMsg" style="font-size:14px;align-self:center"></div><button class="btn ghost" id="calTest" style="flex:0 0 auto">בדוק חיבור</button></div>
+    </div>
+
+    <div class="field">
+      <label>יומן הגנן — App Store (לא חובה)</label>
+      <div class="help">כך ג'רוויס יודע כמה הורידו וקנו, כמה מנויים יש, וכמה כסף נכנס, ומתריע על ביקורות חדשות. המפתח נשמר <b>רק במחשב הזה, מוצפן</b>.<br>
+      1. <a data-link="https://appstoreconnect.apple.com/access/integrations/api">App Store Connect ← Users and Access ← Integrations</a> ← App Store Connect API ← Team Keys ← <b>+</b> ← שם: JARVIS, גישה: <b>Sales</b> ← Generate.<br>
+      2. מעתיקים את <b>Issuer ID</b> (למעלה) ואת <b>Key ID</b>, ולוחצים Download כדי להוריד את קובץ ה־.p8 (אפשר להוריד אותו רק פעם אחת!).<br>
+      3. <b>מספר ספק (Vendor)</b>: <a data-link="https://appstoreconnect.apple.com/itc/payments_and_financial_reports">Payments and Financial Reports</a> ← המספר מופיע למעלה משמאל.</div>
+      <div class="row" style="margin-bottom:6px">
+        <input id="sAscIss" placeholder="Issuer ID" dir="ltr">
+        <input id="sAscKid" placeholder="Key ID" dir="ltr" style="flex:0 0 130px">
+      </div>
+      <div class="row" style="margin-bottom:6px">
+        <input id="sAscVen" placeholder="Vendor number" dir="ltr" style="flex:0 0 150px">
+        <input id="sAscApp" placeholder="שם האפליקציה">
+        <button class="btn ghost" id="ascPick" style="flex:0 0 auto">בחר קובץ .p8…</button>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin:6px 0"><input type="checkbox" id="sAscAlerts" style="width:auto;height:auto"> לעדכן אותי כל בוקר על אתמול, ועל כל ביקורת חדשה</label>
+      <div class="row"><div id="ascMsg" style="font-size:14px;align-self:center"></div><button class="btn ghost" id="ascTest" style="flex:0 0 auto">בדוק חיבור</button></div>
+    </div>
+
+    <div class="field">
       <label>מוזיקת פתיחה</label>
       <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="sIntro" style="width:auto;height:auto"> לנגן מוזיקה כשאני פותח את ג'רוויס</label>
       <div class="row" style="margin-bottom:6px">
@@ -555,6 +582,11 @@ function openSettings(cfg){
   $('#sGemVoice').value = cfg.gemini_voice || 'Charon';
   showEngine();
   $('#sName').value = cfg.user_name || 'אדוני';
+  $('#sCal').value = ''; $('#sCal').placeholder = cfg.has_calendar ? 'מחובר (השאר ריק כדי לא לשנות)' : 'https://calendar.google.com/calendar/ical/.../basic.ics';
+  $('#sCalAlerts').checked = cfg.calendar_alerts !== false; $('#calMsg').textContent = '';
+  $('#sAscIss').value = cfg.asc_issuer || ''; $('#sAscKid').value = cfg.asc_key_id || ''; $('#sAscVen').value = cfg.asc_vendor || '';
+  $('#sAscApp').value = cfg.asc_app_name || ''; $('#sAscAlerts').checked = cfg.asc_alerts !== false;
+  $('#ascMsg').innerHTML = cfg.has_asc_key ? '<span class="ok">🔑 המפתח שמור</span>' : '';
   $('#sIntro').checked = cfg.intro_music !== false; $('#sIntroMode').value = cfg.intro_mode || 'builtin';
   $('#introFile').textContent = cfg.intro_file ? 'הקובץ שנבחר: ' + cfg.intro_file.split(/[\\/]/).pop() : 'אפשר לבחור כל שיר שיש לך במחשב (mp3). מתנגנות עד 12 השניות הראשונות.';
   $('#sRoutines').value = cfg.routines || ''; $('#routineHelp').textContent = cfg.routine_help || ''; $('#routineMsg').textContent = '';
@@ -602,7 +634,10 @@ async function save(quiet){
     brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
     user_name: $('#sName').value, wake_threshold: $('#sSens').value, routines: $('#sRoutines').value,
-    intro_music: $('#sIntro').checked, intro_mode: $('#sIntroMode').value
+    intro_music: $('#sIntro').checked, intro_mode: $('#sIntroMode').value,
+    calendar_ics: $('#sCal').value, calendar_alerts: $('#sCalAlerts').checked,
+    asc_issuer: $('#sAscIss').value, asc_key_id: $('#sAscKid').value, asc_vendor: $('#sAscVen').value,
+    asc_app_name: $('#sAscApp').value, asc_alerts: $('#sAscAlerts').checked
   });
   $('#routineMsg').innerHTML = (r.routine_warn || []).length ? '<span class="bad">שורות שג\'רוויס לא מבין: ' + r.routine_warn.map(x => x.replace(/</g, '&lt;')).join(' · ') + '</span>' : '';
   const key = r.engine === 'groq' ? r.groq : r.claude, name = r.engine === 'groq' ? 'Groq' : 'Claude';
@@ -613,6 +648,21 @@ async function save(quiet){
   if (!quiet && (r.engine === 'groq' ? r.groq : r.claude) === 'ok') setTimeout(() => $('#settings').classList.remove('open'), 1200);
 }
 $('#saveSettings').onclick = () => save(false);
+$('#calTest').onclick = async () => {
+  await save(true); $('#calMsg').innerHTML = '<span>מתחבר…</span>';
+  const r = await api().cal_test();
+  $('#calMsg').innerHTML = r.ok ? `<span class="ok">✔ מחובר. ${r.count} אירועים בשבוע הקרוב.</span>` : `<span class="bad">${r.error}</span>`;
+};
+$('#ascPick').onclick = async () => {
+  const r = await api().asc_pick_key();
+  if (r.ok) { if (r.key_id && !$('#sAscKid').value) $('#sAscKid').value = r.key_id; $('#ascMsg').innerHTML = '<span class="ok">🔑 המפתח נשמר במחשב (מוצפן)</span>'; }
+  else if (r.error) $('#ascMsg').innerHTML = `<span class="bad">${r.error}</span>`;
+};
+$('#ascTest').onclick = async () => {
+  await save(true); $('#ascMsg').innerHTML = '<span>מתחבר לאפל…</span>';
+  const r = await api().asc_test();
+  $('#ascMsg').innerHTML = r.ok ? `<span class="ok">✔ מחובר. ${r.period}: ${r.downloads} הורדות, ${r.purchases} רכישות.</span>` : `<span class="bad">${r.error}</span>`;
+};
 $('#introPick').onclick = async () => { const r = await api().pick_intro(); if (r.ok) { $('#sIntroMode').value = 'file'; $('#introFile').textContent = 'הקובץ שנבחר: ' + r.file.split(/[\\/]/).pop(); } };
 $('#introTest').onclick = () => api().test_intro($('#sIntroMode').value);
 function refreshVoiceInd(cfg){

@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "5.3"
+VERSION = "5.4"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -77,6 +77,15 @@ DEFAULT_CONFIG = {
     "mail_imap_host": "",                   # empty = detected from the address
     "mail_alerts": True,                    # important new emails -> Windows notification + phone app
     "mail_check_minutes": 3,
+    "calendar_ics": "",                     # Google Calendar "secret address in iCal format" (read-only)
+    "calendar_alerts": True,
+    "calendar_alert_minutes": 15,
+    "asc_issuer": "",                       # App Store Connect API (for "יומן הגנן" stats) - key stays on this PC
+    "asc_key_id": "",
+    "asc_key": "",                          # contents of the .p8 file (encrypted with Windows DPAPI on disk)
+    "asc_vendor": "",
+    "asc_app_name": "יומן הגנן",
+    "asc_alerts": True,
     "away_minutes": 5,
     "run_in_background": True,              # closing the window keeps JARVIS listening (icon near the clock)
     "start_with_windows": True,             # start hidden when the PC starts
@@ -97,7 +106,8 @@ DEFAULT_CONFIG = {
 }
 
 
-SECRET_KEYS = ("anthropic_api_key", "groq_api_key", "gemini_api_key", "mail_app_password", "phone_secret")
+SECRET_KEYS = ("anthropic_api_key", "groq_api_key", "gemini_api_key", "mail_app_password", "phone_secret",
+               "calendar_ics", "asc_key")
 
 
 def _dpapi(data, protect):
@@ -1431,6 +1441,443 @@ def delete_routine(name):
     return {"ok": True, "deleted": key}
 
 
+# ======================================================================= CLIPBOARD <-> iPHONE
+def copy_to_phone(text=""):
+    import pyperclip
+    t = (text or "").strip() or (pyperclip.paste() or "")
+    if not t.strip():
+        return {"ok": False, "error": "אין טקסט בלוח ההעתקה של המחשב"}
+    t = t[:200000]
+    if len(t.encode("utf-8")) > 1800:                     # too big for one message -> encrypted attachment
+        PHONE.send_blob(t.encode("utf-8"), "clipboard.txt", "text/plain", "clip")
+    else:
+        PHONE.reply({"type": "clip", "text": t})
+    return {"ok": True, "chars": len(t), "note": "sent to the iPhone app; the user taps 'העתק' there"}
+
+
+def paste_from_phone(text):
+    import pyperclip
+    pyperclip.copy(text)
+    ui.action("📋 הועתק מהטלפון")
+    return "הועתק במחשב. אפשר להדביק עם Ctrl+V."
+
+
+# ======================================================================= GOOGLE CALENDAR (secret iCal address, read-only)
+def _ics_unfold(text):
+    return re.sub(r"\r?\n[ \t]", "", text).splitlines()
+
+
+def _ics_time(value, params):
+    """-> (datetime in local time, all_day)"""
+    v = value.strip()
+    if "VALUE=DATE" in params or re.fullmatch(r"\d{8}", v):
+        return datetime.strptime(v[:8], "%Y%m%d"), True
+    if v.endswith("Z"):
+        from datetime import timezone
+        return datetime.strptime(v, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None), False
+    dt = datetime.strptime(v[:15], "%Y%m%dT%H%M%S")
+    m = re.search(r"TZID=([^;:]+)", params)
+    if m:
+        try:
+            from zoneinfo import ZoneInfo
+            dt = dt.replace(tzinfo=ZoneInfo(m.group(1))).astimezone().replace(tzinfo=None)
+        except Exception:
+            pass
+    return dt, False
+
+
+_WD = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
+
+
+def _expand(ev, start, end):
+    """Occurrences of one event between start and end (handles the common RRULE forms)."""
+    from datetime import timedelta
+    s0, dur = ev["start"], ev["end"] - ev["start"]
+    rule = ev.get("rrule")
+    if not rule:
+        return [s0] if s0 < end and s0 + dur > start else []
+    r = dict(p.split("=", 1) for p in rule.split(";") if "=" in p)
+    freq, step = r.get("FREQ", "DAILY"), int(r.get("INTERVAL", 1))
+    count = int(r["COUNT"]) if "COUNT" in r else None
+    until = _ics_time(r["UNTIL"], "")[0] if "UNTIL" in r else None
+    if until and len(r["UNTIL"]) == 8:
+        until += timedelta(days=1)
+    days = [_WD[d[-2:]] for d in r.get("BYDAY", "").split(",") if d[-2:] in _WD] if freq == "WEEKLY" else []
+    out, n, cur, guard = [], 0, s0, 0
+    while guard < 5000:
+        guard += 1
+        if freq == "WEEKLY" and days:
+            week0 = cur - timedelta(days=cur.weekday())
+            cands = sorted(week0 + timedelta(days=d) for d in days)
+            cands = [c.replace(hour=s0.hour, minute=s0.minute, second=s0.second) for c in cands]
+        else:
+            cands = [cur]
+        for c in cands:
+            if c < s0:
+                continue
+            if (until and c > until) or (count is not None and n >= count) or c >= end:
+                return out
+            n += 1
+            if c + dur > start and c not in ev.get("exdates", ()):
+                out.append(c)
+        if freq == "DAILY":
+            cur += timedelta(days=step)
+        elif freq == "WEEKLY":
+            cur += timedelta(weeks=step)
+        elif freq == "MONTHLY":
+            mth = cur.month - 1 + step
+            try:
+                cur = cur.replace(year=cur.year + mth // 12, month=mth % 12 + 1)
+            except ValueError:
+                cur = cur.replace(day=28, year=cur.year + mth // 12, month=mth % 12 + 1)
+        elif freq == "YEARLY":
+            cur = cur.replace(year=cur.year + step)
+        else:
+            return out
+    return out
+
+
+def parse_ics(text):
+    events, ev = [], None
+    for line in _ics_unfold(text):
+        if line == "BEGIN:VEVENT":
+            ev = {"exdates": set(), "title": "(ללא כותרת)", "location": ""}
+        elif line == "END:VEVENT" and ev is not None:
+            if "start" in ev and ev.get("status") != "CANCELLED":
+                ev.setdefault("end", ev["start"] + (__import__("datetime").timedelta(days=1) if ev["all_day"]
+                                                    else __import__("datetime").timedelta(hours=1)))
+                events.append(ev)
+            ev = None
+        elif ev is not None and ":" in line:
+            head, _, val = line.partition(":")
+            name, _, params = head.partition(";")
+            val_t = val.replace("\\n", " ").replace("\\,", ",").replace("\\;", ";").strip()
+            if name == "DTSTART":
+                ev["start"], ev["all_day"] = _ics_time(val, params)
+            elif name == "DTEND":
+                ev["end"] = _ics_time(val, params)[0]
+            elif name == "SUMMARY":
+                ev["title"] = val_t or ev["title"]
+            elif name == "LOCATION":
+                ev["location"] = val_t
+            elif name == "RRULE":
+                ev["rrule"] = val
+            elif name == "EXDATE":
+                for v in val.split(","):
+                    ev["exdates"].add(_ics_time(v, params)[0])
+            elif name == "STATUS":
+                ev["status"] = val.strip()
+            elif name == "UID":
+                ev["uid"] = val.strip()
+            elif name == "RECURRENCE-ID":
+                ev["recurrence_id"] = _ics_time(val, params)[0]
+    # moved/edited single occurrences replace the original one
+    moved = {(e.get("uid"), e["recurrence_id"]) for e in events if e.get("recurrence_id")}
+    for e in events:
+        if e.get("rrule"):
+            e["exdates"] |= {rid for uid, rid in moved if uid == e.get("uid")}
+    return events
+
+
+class Calendar:
+    def __init__(self):
+        self.cache, self.cache_t, self.alerted = None, 0, set()
+
+    def configured(self):
+        return bool((CFG.get("calendar_ics") or "").strip())
+
+    def events(self, start, end):
+        import httpx
+        if not self.configured():
+            raise RuntimeError("calendar not connected")
+        if self.cache is None or time.time() - self.cache_t > 600:
+            r = httpx.get(CFG["calendar_ics"].strip(), timeout=30, follow_redirects=True)
+            r.raise_for_status()
+            if "BEGIN:VCALENDAR" not in r.text[:500]:
+                raise RuntimeError("הכתובת לא מחזירה יומן. צריך את 'הכתובת הסודית בפורמט iCal'.")
+            self.cache, self.cache_t = parse_ics(r.text), time.time()
+        out = []
+        for ev in self.cache:
+            for occ in _expand(ev, start, end):
+                out.append({"title": ev["title"], "start": occ, "end": occ + (ev["end"] - ev["start"]),
+                            "all_day": ev["all_day"], "location": ev["location"]})
+        return sorted(out, key=lambda e: e["start"])
+
+    def loop(self):
+        from datetime import timedelta
+        time.sleep(40)
+        while True:
+            try:
+                if self.configured() and CFG.get("calendar_alerts", True):
+                    now = datetime.now()
+                    lead = float(CFG.get("calendar_alert_minutes", 15))
+                    for e in self.events(now, now + timedelta(minutes=lead + 1)):
+                        key = (e["title"], e["start"])
+                        if e["all_day"] or key in self.alerted or e["start"] < now:
+                            continue
+                        self.alerted.add(key)
+                        mins = max(1, round((e["start"] - now).total_seconds() / 60))
+                        where = f" ({e['location']})" if e["location"] else ""
+                        notify(f"📅 בעוד {mins} דקות: {e['title']}{where}")
+            except Exception as ex:
+                log.warning(f"calendar: {ex}")
+            time.sleep(60)
+
+
+CALENDAR = Calendar()
+
+
+def calendar_events(day="today", days=1):
+    from datetime import timedelta
+    if not CALENDAR.configured():
+        return {"ok": False, "error": "היומן לא מחובר. מחברים בהגדרות ← יומן Google."}
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    d = (day or "today").strip().lower()
+    if d in ("today", "היום"):
+        start = today
+    elif d in ("tomorrow", "מחר"):
+        start = today + timedelta(days=1)
+    elif d in ("week", "השבוע"):
+        start, days = today, 7
+    else:
+        try:
+            start = datetime.strptime(d[:10], "%Y-%m-%d")
+        except ValueError:
+            start = today
+    days = max(1, min(31, int(days or 1)))
+    evs = CALENDAR.events(start, start + timedelta(days=days))
+    return {"ok": True, "from": start.strftime("%Y-%m-%d"), "days": days, "events": [
+        {"title": e["title"], "date": e["start"].strftime("%Y-%m-%d"),
+         "time": "כל היום" if e["all_day"] else e["start"].strftime("%H:%M") + "-" + e["end"].strftime("%H:%M"),
+         "location": e["location"]} for e in evs]}
+
+
+def add_calendar_event(title, start, minutes=60, details=""):
+    """Opens Google Calendar in Chrome with the event filled in; the user clicks Save."""
+    from datetime import timedelta
+    from urllib.parse import quote
+    s = datetime.fromisoformat(start.strip().replace("Z", ""))
+    e = s + timedelta(minutes=int(minutes or 60))
+    f = "%Y%m%dT%H%M%S"
+    url = (f"https://calendar.google.com/calendar/render?action=TEMPLATE&text={quote(title)}"
+           f"&dates={s.strftime(f)}/{e.strftime(f)}&ctz=Asia/Jerusalem&details={quote(details or '')}")
+    open_in_chrome(url)
+    CALENDAR.cache = None
+    return {"ok": True, "note": "Google Calendar opened in Chrome with the event filled in - the user must click 'שמירה' (Save)"}
+
+
+# ======================================================================= APP STORE CONNECT ("יומן הגנן" stats)
+ASC_CACHE_FILE = DATA_DIR / "appstore_cache.json"
+
+
+def _asc_token():
+    import base64
+    from cryptography.hazmat.primitives import serialization, hashes
+    from cryptography.hazmat.primitives.asymmetric import ec, utils
+    key = serialization.load_pem_private_key(CFG["asc_key"].encode(), None)
+    b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=")
+    now = int(time.time())
+    h = b64(json.dumps({"alg": "ES256", "kid": CFG["asc_key_id"].strip(), "typ": "JWT"}).encode())
+    p = b64(json.dumps({"iss": CFG["asc_issuer"].strip(), "iat": now, "exp": now + 1100,
+                        "aud": "appstoreconnect-v1"}).encode())
+    r, s = utils.decode_dss_signature(key.sign(h + b"." + p, ec.ECDSA(hashes.SHA256())))
+    return (h + b"." + p + b"." + b64(r.to_bytes(32, "big") + s.to_bytes(32, "big"))).decode()
+
+
+class AppStore:
+    API = "https://api.appstoreconnect.apple.com"
+
+    def __init__(self):
+        try:
+            self.cache = json.loads(ASC_CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            self.cache = {}
+        self.cache.setdefault("days", {})
+        self.cache.setdefault("seen_reviews", [])
+
+    def configured(self):
+        return all((CFG.get(k) or "").strip() for k in ("asc_issuer", "asc_key_id", "asc_key", "asc_vendor"))
+
+    def _save(self):
+        try:
+            ASC_CACHE_FILE.write_text(json.dumps(self.cache, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _get(self, path, params=None):
+        import httpx
+        r = httpx.get(self.API + path, params=params, timeout=40,
+                      headers={"Authorization": "Bearer " + _asc_token()})
+        if r.status_code == 401:
+            raise RuntimeError("אפל דחתה את המפתח. בדוק את Issuer ID, Key ID והקובץ .p8.")
+        if r.status_code == 403:
+            raise PermissionError("למפתח אין הרשאה לזה (צריך תפקיד Sales או Admin).")
+        return r
+
+    def _report(self, date, kind="SALES"):
+        """One day's report rows (cached: past days never change)."""
+        import gzip, csv, io
+        key = f"{kind}:{date}"
+        if key in self.cache["days"]:
+            return self.cache["days"][key]
+        params = {"filter[frequency]": "DAILY", "filter[reportType]": kind, "filter[reportSubType]": "SUMMARY",
+                  "filter[vendorNumber]": CFG["asc_vendor"].strip(), "filter[reportDate]": date,
+                  "filter[version]": "1_1" if kind == "SALES" else "1_3"}
+        r = self._get("/v1/salesReports", params)
+        if r.status_code == 404:                   # not ready yet / no sales that day
+            body = r.text
+            if "no sales" in body.lower() or "There were no sales" in body:
+                self.cache["days"][key] = []
+                self._save()
+                return []
+            return None
+        r.raise_for_status()
+        raw = r.content
+        if raw[:2] == b"\x1f\x8b":
+            raw = gzip.decompress(raw)
+        rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8", "replace")), delimiter="\t"))
+        keep = ("Units", "Product Type Identifier", "Developer Proceeds", "Currency of Proceeds", "Title",
+                "Country Code", "SKU", "Apple Identifier", "Parent Identifier")
+        rows = [{k: row.get(k, "") for k in keep} if kind == "SALES" else row for row in rows]
+        if date < datetime.now().strftime("%Y-%m-%d"):
+            self.cache["days"][key] = rows
+            self._save()
+        return rows
+
+    def _match(self, row):
+        name = (CFG.get("asc_app_name") or "").strip()
+        return not name or name in row.get("Title", "") or name in row.get("App Name", "")
+
+    def stats(self, days=1):
+        from datetime import timedelta
+        days = max(1, min(30, int(days or 1)))
+        out = {"downloads": 0, "purchases": 0, "updates": 0, "proceeds": {}, "countries": {}, "dates": []}
+        d, got = datetime.now() - timedelta(days=1), 0
+        for _ in range(days + 3):                  # the newest daily report is usually ~1 day behind
+            if got >= days:
+                break
+            ds = d.strftime("%Y-%m-%d")
+            rows = self._report(ds)
+            d -= timedelta(days=1)
+            if rows is None:
+                continue
+            got += 1
+            out["dates"].append(ds)
+            for row in rows:
+                if not self._match(row):
+                    continue
+                units = int(float(row.get("Units") or 0))
+                t = row.get("Product Type Identifier", "")
+                if t.startswith(("1", "F1")):
+                    out["downloads"] += units
+                elif t.startswith(("IA", "FI")):
+                    out["purchases"] += units
+                elif t.startswith(("7", "F7")):
+                    out["updates"] += units
+                money = units * float(row.get("Developer Proceeds") or 0)
+                if money:
+                    cur = row.get("Currency of Proceeds") or "?"
+                    out["proceeds"][cur] = round(out["proceeds"].get(cur, 0) + money, 2)
+                if t.startswith(("1", "F1", "IA", "FI")) and units:
+                    cc = row.get("Country Code") or "?"
+                    out["countries"][cc] = out["countries"].get(cc, 0) + units
+        if out["dates"]:
+            out["period"] = f"{out['dates'][-1]} עד {out['dates'][0]}"
+        else:
+            out["note"] = "אפל עוד לא פרסמה דוחות לימים האלה"
+        try:                                       # active subscribers (latest subscription report)
+            d = datetime.now() - timedelta(days=1)
+            for _ in range(4):
+                rows = self._report(d.strftime("%Y-%m-%d"), "SUBSCRIPTION")
+                d -= timedelta(days=1)
+                if rows is None:
+                    continue
+                active = 0
+                for row in rows:
+                    if not self._match(row):
+                        continue
+                    for k, v in row.items():
+                        if k and k.startswith("Active") and "Subscriptions" in k:
+                            active += int(float(v or 0))
+                out["active_subscribers"] = active
+                break
+        except Exception as e:
+            log.info(f"subscription report: {e}")
+        return out
+
+    def app_id(self):
+        if self.cache.get("app_id"):
+            return self.cache["app_id"]
+        r = self._get("/v1/apps", {"limit": 50, "fields[apps]": "name,bundleId"})
+        r.raise_for_status()
+        apps = r.json().get("data", [])
+        name = (CFG.get("asc_app_name") or "").strip()
+        pick = next((a for a in apps if name and name in a["attributes"].get("name", "")), apps[0] if apps else None)
+        if not pick:
+            raise RuntimeError("לא נמצאו אפליקציות בחשבון")
+        self.cache["app_id"] = pick["id"]
+        self._save()
+        return pick["id"]
+
+    def reviews(self, limit=5):
+        r = self._get(f"/v1/apps/{self.app_id()}/customerReviews", {"sort": "-createdDate", "limit": max(1, min(50, limit))})
+        r.raise_for_status()
+        return [{"id": x["id"], "rating": x["attributes"].get("rating"), "title": x["attributes"].get("title", ""),
+                 "text": (x["attributes"].get("body") or "")[:400], "date": (x["attributes"].get("createdDate") or "")[:10],
+                 "country": x["attributes"].get("territory", "")} for x in r.json().get("data", [])]
+
+    def loop(self):
+        time.sleep(90)
+        while True:
+            try:
+                if self.configured() and CFG.get("asc_alerts", True):
+                    # yesterday's numbers, once, when Apple publishes them
+                    from datetime import timedelta
+                    y = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+                    if self.cache.get("reported") != y and self._report(y) is not None:
+                        s = self.stats(1)
+                        if s.get("dates") and s["dates"][0] == y:
+                            money = ", ".join(f"{v:g} {k}" for k, v in s["proceeds"].items()) or "0"
+                            notify(f"🌱 יומן הגנן אתמול: {s['downloads']} הורדות, {s['purchases']} רכישות, הכנסה {money}")
+                            self.cache["reported"] = y
+                            self._save()
+                    try:                           # new reviews
+                        seen = set(self.cache["seen_reviews"])
+                        revs = self.reviews(10)
+                        if self.cache.get("reviews_seeded"):
+                            for rv in reversed(revs):
+                                if rv["id"] not in seen:
+                                    notify(f"⭐ ביקורת חדשה ליומן הגנן ({rv['rating']}/5): {rv['title']} — {rv['text'][:120]}")
+                        self.cache["seen_reviews"] = (list(seen | {r['id'] for r in revs}))[-500:]
+                        self.cache["reviews_seeded"] = True
+                        self._save()
+                    except PermissionError:
+                        pass
+            except Exception as e:
+                log.warning(f"app store: {e}")
+            time.sleep(3 * 3600)
+
+
+APPSTORE = AppStore()
+
+
+def app_store_stats(days=1, reviews=True):
+    if not APPSTORE.configured():
+        return {"ok": False, "error": "החיבור לאפל לא מוגדר. מחברים בהגדרות ← יומן הגנן."}
+    out = {"ok": True, "app": CFG.get("asc_app_name") or "", **APPSTORE.stats(days)}
+    if reviews:
+        try:
+            revs = APPSTORE.reviews(5)
+            out["recent_reviews"] = revs
+            if revs:
+                out["recent_avg_rating"] = round(sum(r["rating"] or 0 for r in revs) / len(revs), 1)
+        except PermissionError:
+            out["reviews"] = "no permission for reviews with this key"
+        except Exception as e:
+            out["reviews"] = f"error: {e}"
+    return out
+
+
 def morning_brief():
     out = {"datetime": get_datetime()}
     try:
@@ -1449,6 +1896,17 @@ def morning_brief():
             out["unread_mail"] = {"error": str(e)}
     else:
         out["unread_mail"] = "email not connected"
+    if CALENDAR.configured():
+        try:
+            out["calendar_today"] = calendar_events("today")["events"]
+        except Exception as e:
+            out["calendar_today"] = {"error": str(e)}
+    if APPSTORE.configured():
+        try:
+            st = APPSTORE.stats(1)
+            out["yomen_hagannan_yesterday"] = {k: st.get(k) for k in ("downloads", "purchases", "proceeds", "active_subscribers", "period")}
+        except Exception as e:
+            out["yomen_hagannan_yesterday"] = {"error": str(e)}
     return out
 
 
@@ -1880,6 +2338,19 @@ class PhoneLink:
                 except Exception as e:
                     log.warning(f"intro to phone: {e}")
                     self.reply({"type": "intro_error", "text": str(e)[:200]})
+        elif m.get("type") == "clip":
+            try:
+                text = self.fetch_blob(m["url"]).decode("utf-8") if m.get("url") else str(m.get("text", ""))
+                msg = paste_from_phone(text)
+            except Exception as e:
+                msg = f"לא הצלחתי להעתיק: {e}"
+            self.reply({"type": "answer", "id": m.get("id"), "text": msg, "quiet": True})
+        elif m.get("type") == "clip_get":
+            try:
+                copy_to_phone("")
+                self.reply({"type": "answer", "id": m.get("id"), "text": "📋 הלוח של המחשב:", "quiet": True})
+            except Exception as e:
+                self.reply({"type": "answer", "id": m.get("id"), "text": f"אין מה להעתיק ({e})", "quiet": True})
         elif m.get("type") == "routines":
             self.reply({"type": "routines", "names": list(routines())})
         elif m.get("type") == "routine":
@@ -2021,6 +2492,13 @@ TOOLS += [
     _t("save_routine", "Create or replace a routine the user explicitly asked for. Steps are short Hebrew lines, each one of: " + ROUTINE_HELP + ". App names in English (פתח chrome).",
        {"name": S, "steps": {"type": "array", "items": S}}, ["name", "steps"]),
     _t("delete_routine", "Delete a routine the user asked to delete.", {"name": S}, ["name"]),
+    _t("copy_to_phone", "Send text to the iPhone app so the user can paste it there. Empty text = whatever is in the PC clipboard now.", {"text": S}),
+    _t("calendar_events", "The user's Google Calendar events. day = 'today', 'tomorrow', 'week' or YYYY-MM-DD; days = how many days.",
+       {"day": S, "days": {"type": "integer"}}),
+    _t("add_calendar_event", "Add an event to Google Calendar (only when asked). start = local ISO time like 2026-11-17T17:00. Opens Chrome with the event filled in; tell the user to click 'שמירה'.",
+       {"title": S, "start": S, "minutes": {"type": "integer"}, "details": S}, ["title", "start"]),
+    _t("app_store_stats", "Sales and status of the user's own iPhone app 'יומן הגנן' from App Store Connect: downloads, in-app purchases, proceeds, active subscribers, countries, recent reviews. days = 1 (yesterday), 7, 30.",
+       {"days": {"type": "integer"}}),
 ]
 
 ACTION_LABELS = {
@@ -2035,7 +2513,8 @@ ACTION_LABELS = {
     "check_email": "בודק מיילים", "remember": "זוכר: {fact}", "forget": "שוכח: {contains}", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
     "cancel_reminders": "מבטל תזכורות", "morning_brief": "מכין תדריך בוקר", "send_to_phone": "שולח לטלפון: {what}",
     "run_routine": "שגרה: {name}", "list_routines": "בודק שגרות", "save_routine": "שומר שגרה: {name}",
-    "delete_routine": "מוחק שגרה: {name}",
+    "delete_routine": "מוחק שגרה: {name}", "copy_to_phone": "מעתיק לטלפון", "calendar_events": "בודק ביומן",
+    "add_calendar_event": "מוסיף ליומן: {title}", "app_store_stats": "בודק את יומן הגנן ב־App Store",
 }
 
 
@@ -2065,7 +2544,9 @@ Rules:
 - Reminders: set_reminder (only when asked). You have no WhatsApp or SMS access.
 - Good morning / briefing: call morning_brief, then speak a short natural briefing (3-5 sentences): greeting, weather, today's reminders, and only the important new emails. Don't read addresses.
 - Email: when asked about mail, give ONE short sentence per email, important ones first, at most 5; say how many others there are. You can only read mail, not send or delete.
-- Phone: send_to_phone sends files/screenshots to the iPhone app. Routines: run_routine / save_routine / list_routines.
+- Phone: send_to_phone sends files/screenshots to the iPhone app; copy_to_phone sends text/clipboard. Routines: run_routine / save_routine / list_routines.
+- Calendar: calendar_events to read; add_calendar_event to add (the user then clicks Save in Chrome). Say times naturally in Hebrew.
+- "יומן הגנן" is the user's own app: app_store_stats for downloads/purchases/money/reviews. Say numbers simply; mention money with its currency.
 - You only understand Hebrew. If the message is not in Hebrew, or is clearly garbled speech-recognition noise / background chatter not addressed to you, reply with exactly [IGNORE] and nothing else."""
 
 
@@ -2116,6 +2597,10 @@ class Brain:
             "run_routine": lambda: run_routine(a["name"]), "list_routines": lambda: {"routines": routines()},
             "save_routine": lambda: save_routine(a["name"], a.get("steps")),
             "delete_routine": lambda: delete_routine(a["name"]),
+            "copy_to_phone": lambda: copy_to_phone(a.get("text", "")),
+            "calendar_events": lambda: calendar_events(a.get("day", "today"), a.get("days", 1)),
+            "add_calendar_event": lambda: add_calendar_event(a["title"], a["start"], a.get("minutes", 60), a.get("details", "")),
+            "app_store_stats": lambda: app_store_stats(a.get("days", 1)),
         }.get(name)
         if not f:
             return {"ok": False, "error": "unknown tool"}
@@ -2437,6 +2922,8 @@ class Assistant:
         global REMINDERS
         REMINDERS = self.reminders = Reminders(self.timers.events)
         threading.Thread(target=MAIL.loop, daemon=True).start()
+        threading.Thread(target=CALENDAR.loop, daemon=True).start()
+        threading.Thread(target=APPSTORE.loop, daemon=True).start()
         PHONE.answer = self.answer_text
         PHONE.voice = lambda t: self.speaker.synth(t)
         threading.Thread(target=PHONE.loop, daemon=True).start()
@@ -2488,6 +2975,9 @@ class Assistant:
             self.speaker.say(f"מתקין את גרסה {r['version']}. אחזור בעוד רגע.")
             restart_jarvis(r.get("installer", False))
 
+        if re.fullmatch(r"(תעתיק|העתק|תשלח) (את זה |את הטקסט )?(לטלפון|לאייפון)", s):
+            r = copy_to_phone("")
+            return f"שלחתי לטלפון, {u}." if r.get("ok") else r["error"]
         if re.fullmatch(r"(תבטל|בטל|תעצור|עצור) (את ה)?כיבוי( המחשב)?", s):
             power("cancel")
             return f"ביטלתי את הכיבוי, {u}."
@@ -2731,6 +3221,10 @@ class Api:
             "gemini_voice": CFG.get("gemini_voice", "Charon"),
             "user_name": CFG["user_name"], "wake_threshold": CFG["wake_threshold"],
             "routines": routines_text(), "routine_help": ROUTINE_HELP,
+            "has_calendar": CALENDAR.configured(), "calendar_alerts": bool(CFG.get("calendar_alerts", True)),
+            "asc_issuer": CFG.get("asc_issuer", ""), "asc_key_id": CFG.get("asc_key_id", ""),
+            "asc_vendor": CFG.get("asc_vendor", ""), "asc_app_name": CFG.get("asc_app_name", ""),
+            "has_asc_key": bool(CFG.get("asc_key")), "asc_alerts": bool(CFG.get("asc_alerts", True)),
             "intro_music": bool(CFG.get("intro_music", True)), "intro_mode": CFG.get("intro_mode", "builtin"),
             "intro_file": CFG.get("intro_file", ""),
         }
@@ -2763,6 +3257,17 @@ class Api:
             CFG["user_name"] = s["user_name"].strip()
         if s.get("wake_threshold"):
             CFG["wake_threshold"] = float(s["wake_threshold"])
+        if s.get("calendar_ics", "").strip():
+            CFG["calendar_ics"] = s["calendar_ics"].strip()
+            CALENDAR.cache = None
+        for k in ("calendar_alerts", "asc_alerts"):
+            if k in s:
+                CFG[k] = bool(s[k])
+        for k in ("asc_issuer", "asc_key_id", "asc_vendor", "asc_app_name"):
+            if k in s and isinstance(s[k], str):
+                if CFG.get(k) != s[k].strip():
+                    APPSTORE.cache.pop("app_id", None)
+                CFG[k] = s[k].strip()
         if "intro_music" in s:
             CFG["intro_music"] = bool(s["intro_music"])
         if s.get("intro_mode") in ("builtin", "file"):
@@ -2886,6 +3391,54 @@ class Api:
                     os._exit(0)
         except Exception as e:
             log.error(f"window action {action}: {e}")
+
+    def cal_test(self):
+        if not CALENDAR.configured():
+            return {"ok": False, "error": "צריך להדביק את הכתובת הסודית של היומן."}
+        try:
+            CALENDAR.cache = None
+            r = calendar_events("week")
+            return {"ok": True, "count": len(r["events"])}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
+    def asc_pick_key(self):
+        import webview
+        try:
+            r = ui.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
+                                             file_types=("Apple key (*.p8)", "All files (*.*)"))
+            if not r:
+                return {"ok": False}
+            text = Path(r[0] if isinstance(r, (list, tuple)) else str(r)).read_text(encoding="utf-8").strip()
+            if "BEGIN PRIVATE KEY" not in text:
+                return {"ok": False, "error": "זה לא קובץ מפתח של אפל (.p8)"}
+            from cryptography.hazmat.primitives import serialization
+            serialization.load_pem_private_key(text.encode(), None)
+            CFG["asc_key"] = text
+            m = re.search(r"AuthKey_([A-Z0-9]{8,12})\.p8", str(r))
+            if m and not CFG.get("asc_key_id"):
+                CFG["asc_key_id"] = m.group(1)
+            save_config()
+            return {"ok": True, "key_id": CFG.get("asc_key_id", "")}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
+    def asc_test(self):
+        if not APPSTORE.configured():
+            return {"ok": False, "error": "צריך למלא Issuer ID, Key ID, מספר ספק (Vendor) ולבחור את קובץ ה־.p8."}
+        try:
+            st = APPSTORE.stats(1)
+            if not APPSTORE.cache.get("reviews_seeded"):
+                try:
+                    APPSTORE.cache["seen_reviews"] = [r["id"] for r in APPSTORE.reviews(20)]
+                    APPSTORE.cache["reviews_seeded"] = True
+                    APPSTORE._save()
+                except Exception:
+                    pass
+            return {"ok": True, "downloads": st["downloads"], "purchases": st["purchases"],
+                    "period": st.get("period", st.get("note", ""))}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
 
     def pick_intro(self):
         import webview

@@ -133,6 +133,10 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
     <button class="pb warn" data-cmd="shutdown"><b>⏻</b>כבה</button>
     <button class="pb" data-cmd="cancel_shutdown"><b>✋</b>בטל כיבוי</button>
     <button class="pb" data-ask="בוקר טוב"><b>☀️</b>תדריך</button>
+    <button class="pb" data-act="clip_up"><b>📋</b>הדבק למחשב</button>
+    <button class="pb" data-act="clip_get"><b>📋</b>מהמחשב</button>
+    <button class="pb" data-ask="מה יש לי ביומן היום ומחר?"><b>📅</b>יומן</button>
+    <button class="pb" data-ask="מה המצב של יומן הגנן? כמה הורדות ורכישות היו השבוע?"><b>🌱</b>יומן הגנן</button>
   </div>
   <div id="routines"></div>
   <input type="file" id="fileIn" style="display:none">
@@ -290,6 +294,8 @@ function listen(){
     if (m.type === 'intro_error'){ const t = '🎵 המחשב לא הצליח לשלוח את השיר: ' + m.text; if (introMsg) introMsg.textContent = t; else add('sys', t); introMsg = null; return; }
     if (m.type === 'novoice'){ noVoice(m.id); return; }
     if (m.type === 'file'){ setStatus(true); gotFile(m); return; }
+    if (m.type === 'clip'){ setStatus(true); showClip(m.text || ''); return; }
+    if (m.type === 'file' && m.kind === 'clip'){ gotClip(m); return; }
     if (m.type === 'routines'){ setStatus(true); showRoutines(m.names || []); return; }
     if (m.type === 'answer' && m.quiet){ setStatus(true); const el = pending[m.id]; delete pending[m.id]; if (el) { el.className = 'msg sys'; el.textContent = m.text; } else add('sys', m.text); return; }
     if (m.type === 'answer'){
@@ -368,6 +374,38 @@ async function gotFile(m){
 }
 $('#viewerImg').onclick = () => $('#viewer').classList.toggle('zoom');
 $('#viewerX').onclick = () => { $('#viewer').className = ''; };
+// ---------- clipboard between the iPhone and the PC
+function showClip(text){
+  const el = add('j', ''); const pre = document.createElement('div');
+  pre.style.cssText = 'white-space:pre-wrap;max-height:220px;overflow:auto;direction:auto';
+  pre.textContent = text.length > 3000 ? text.slice(0, 3000) + '…' : text; el.appendChild(pre);
+  const b = document.createElement('button'); b.className = 'filebtn'; b.textContent = 'העתק';
+  b.onclick = async () => { try { await navigator.clipboard.writeText(text); b.textContent = '✔ הועתק'; } catch(e){ b.textContent = 'לא הצלחתי — סמן והעתק ידנית'; } };
+  el.appendChild(b); $('#log').scrollTop = 1e9;
+}
+async function gotClip(m){
+  try {
+    const r = await fetch(m.url); const raw = new Uint8Array(await r.arrayBuffer());
+    const pt = await crypto.subtle.decrypt({name: 'AES-GCM', iv: raw.slice(0, 12)}, KEY, raw.slice(12));
+    showClip(new TextDecoder().decode(pt));
+  } catch(e){ add('sys', 'לא הצלחתי לקבל את הטקסט מהמחשב'); }
+}
+$('#panel [data-act=clip_get]').onclick = () => sendCmd({type: 'clip_get'}, '📋 מבקש מהמחשב…');
+$('#panel [data-act=clip_up]').onclick = async () => {
+  let text = '';
+  try { text = await navigator.clipboard.readText(); } catch(e){}
+  if (!text) text = prompt('מה להעתיק למחשב?') || '';
+  if (!text.trim()) return;
+  if (new TextEncoder().encode(text).length <= 1800) { sendCmd({type: 'clip', text}, '📋 מעתיק למחשב…'); return; }
+  try {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv}, KEY, new TextEncoder().encode(text)));
+    const body = new Uint8Array(12 + ct.length); body.set(iv); body.set(ct, 12);
+    const j = await (await fetch('https://ntfy.sh/' + TOPIC + '-f', {method: 'PUT', body, headers: {'Filename': 'blob.bin'}})).json();
+    sendCmd({type: 'clip', url: j.attachment.url}, '📋 מעתיק למחשב…');
+  } catch(e){ add('sys', 'ההעתקה נכשלה: ' + e.message); }
+};
+
 function showRoutines(names){
   const box = $('#routines'); box.innerHTML = '';
   names.forEach(n => { const c = document.createElement('button'); c.className = 'chip'; c.textContent = '⚡ ' + n;
