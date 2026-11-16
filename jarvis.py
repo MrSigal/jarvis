@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "5.9"
+VERSION = "6.0"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -3755,6 +3755,59 @@ class Api:
                                                  (v.get("labels") or {}).get("description", "")) if x)}
                    for v in r.json().get("voices", [])]
             return {"ok": True, "voices": sorted(out, key=lambda v: (not v["female"], v["name"]))}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
+    def el_search(self, query, key=""):
+        """Search ElevenLabs' public Voice Library (e.g. Hebrew voices like 'Danit')."""
+        import httpx
+        k = (key or "").strip() or CFG.get("el_api_key", "")
+        if not k:
+            return {"ok": False, "error": "צריך להדביק מפתח"}
+        q = (query or "").strip()
+        tries = [{"search": q, "language": "he"}, {"search": q}] if q else [{"language": "he"}]
+        HE2EN = {"דנית": "Danit", "נועה": "Noa", "מאיה": "Maya", "שירה": "Shira", "יעל": "Yael", "טל": "Tal",
+                 "רוני": "Roni", "מיכל": "Michal", "איתן": "Eitan", "נועם": "Noam", "דניאל": "Daniel"}
+        if q in HE2EN:
+            tries += [{"search": HE2EN[q], "language": "he"}, {"search": HE2EN[q]}]
+        seen, out = set(), []
+        try:
+            for params in tries:
+                r = httpx.get("https://api.elevenlabs.io/v1/shared-voices", headers={"xi-api-key": k},
+                              params=dict(params, page_size=30), timeout=20)
+                if r.status_code == 401:
+                    return {"ok": False, "error": "למפתח אין הרשאת Voices"}
+                r.raise_for_status()
+                for v in r.json().get("voices", []):
+                    if v["voice_id"] in seen:
+                        continue
+                    seen.add(v["voice_id"])
+                    out.append({"id": v["voice_id"], "owner": v.get("public_owner_id", ""), "name": v.get("name", ""),
+                                "female": v.get("gender") == "female", "lang": v.get("language", ""),
+                                "accent": v.get("accent", ""), "desc": (v.get("description") or "")[:90],
+                                "preview": v.get("preview_url", ""), "rate": v.get("rate") or 1})
+                if len(out) >= 8:
+                    break
+            out.sort(key=lambda v: (v["lang"] != "he", not v["female"]))
+            return {"ok": True, "voices": out[:30]}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
+    def el_add(self, owner, voice_id, name, female, key=""):
+        """Add a Voice Library voice to the user's account and make it JARVIS's voice."""
+        import httpx
+        k = (key or "").strip() or CFG.get("el_api_key", "")
+        try:
+            r = httpx.post(f"https://api.elevenlabs.io/v1/voices/add/{owner}/{voice_id}", headers={"xi-api-key": k},
+                           json={"new_name": name}, timeout=30)
+            if r.status_code >= 400 and "already" not in r.text.lower():
+                return {"ok": False, "error": f"ElevenLabs: {r.text[:200]}"}
+            new_id = (r.json() or {}).get("voice_id", voice_id) if r.status_code < 400 else voice_id
+            if (key or "").strip():
+                CFG["el_api_key"] = key.strip()
+            CFG.update(el_voice_id=new_id, el_voice_name=name, el_female=bool(female), tts_engine="eleven")
+            save_config()
+            return {"ok": True, "id": new_id, "name": name}
         except Exception as e:
             return {"ok": False, "error": str(e)[:200]}
 

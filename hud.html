@@ -358,6 +358,9 @@ body.gl .reactor .glow{opacity:.18}
         <div class="help">משתמש רק בקרדיטים שכבר יש לך בחשבון. <b>כשהם נגמרים ג'רוויס עובר לבד לקול החינמי</b> ולא קונה עוד, וכשהם מתחדשים בחודש הבא הוא חוזר ל־ElevenLabs. בערך 70 קרדיטים לכל תשובה.<br>מפתח: <a data-link="https://elevenlabs.io/app/settings/api-keys">elevenlabs.io ← API Keys</a> ← Create API Key ← מסמנים הרשאות <b>Text to Speech</b>, <b>Voices</b> (Read) ו־<b>User</b> (Read) ← מעתיקים.<br>כדי לא לשלם בטעות: באתר שלהם, ב־Subscription, ודא ש־<b>Usage-based billing</b> כבוי.</div>
         <input id="sElKey" type="password" placeholder="sk_…" style="margin-bottom:8px">
         <div class="row"><select id="sElVoice"><option value="">— קודם הדבק מפתח —</option></select><button class="btn ghost" id="elLoad" style="flex:0 0 auto">טען קולות</button></div>
+        <div class="help" style="margin-top:8px">רוצה קול מספריית הקולות שלהם (למשל <b>דנית</b>)? חפש כאן, הקש ▶ לשמוע, ו"בחר".</div>
+        <div class="row"><input id="elQ" placeholder="שם קול, למשל דנית"><button class="btn ghost" id="elFind" style="flex:0 0 auto">חפש</button></div>
+        <div id="elResults" style="max-height:230px;overflow:auto;margin-top:6px"></div>
       </div>
       <div class="row" style="margin-top:8px">
         <div id="vsMsg" style="font-size:14px;align-self:center"></div>
@@ -638,6 +641,34 @@ async function loadElVoices(keep){
     o.textContent = `${v.name} — ${v.female ? 'אישה' : 'גבר'}${v.desc ? ', ' + v.desc : ''}`; sel.appendChild(o); });
   if (keep) sel.value = keep;
 }
+const elPlayer = new Audio();
+$('#elFind').onclick = async () => {
+  const box = $('#elResults'); box.innerHTML = '<div class="help">מחפש…</div>';
+  const r = await api().el_search($('#elQ').value, $('#sElKey').value);
+  if (!r.ok) { box.innerHTML = `<div class="help bad">${r.error}</div>`; return; }
+  if (!r.voices.length) { box.innerHTML = '<div class="help">לא נמצא קול בשם הזה. נסה באנגלית (Danit).</div>'; return; }
+  box.innerHTML = '';
+  r.voices.forEach(v => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:6px 2px;border-bottom:1px solid var(--cdim);font-size:14px';
+    const t = document.createElement('span'); t.style.flex = '1';
+    t.textContent = `${v.name} — ${v.female ? 'אישה' : 'גבר'}${v.lang === 'he' ? ', עברית' : ''}${v.rate > 1 ? ' · עולה פי ' + v.rate : ''}`;
+    t.title = v.desc;
+    const play = document.createElement('button'); play.className = 'btn ghost'; play.textContent = '▶'; play.style.cssText = 'flex:0 0 auto;padding:2px 10px;min-height:0';
+    play.onclick = () => { if (v.preview) { elPlayer.src = v.preview; elPlayer.play(); } };
+    const pick = document.createElement('button'); pick.className = 'btn'; pick.textContent = 'בחר'; pick.style.cssText = 'flex:0 0 auto;padding:2px 12px;min-height:0';
+    pick.onclick = async () => {
+      pick.textContent = '…';
+      const a = await api().el_add(v.owner, v.id, v.name, v.female, $('#sElKey').value);
+      if (!a.ok) { pick.textContent = 'בחר'; $('#vsMsg').innerHTML = `<span class="bad">${a.error}</span>`; return; }
+      const sel = $('#sElVoice'); sel.innerHTML = `<option value="${a.id}" data-name="${a.name}" data-female="${v.female ? '1' : ''}">${a.name}</option>`;
+      $('#sEngine').value = 'eleven'; showEngine();
+      $('#vsMsg').innerHTML = `<span class="ok">✔ ${a.name} נבחרה. לחץ "נסה" לשמוע.</span>`; pick.textContent = '✔';
+    };
+    row.append(t, play, pick); box.appendChild(row);
+  });
+};
+$('#elQ').onkeydown = e => { if (e.key === 'Enter') $('#elFind').click(); };
 $('#elLoad').onclick = () => loadElVoices(window.__cfg && __cfg.el_voice_id);
 $('#phoneCopy').onclick = async () => { const ok = await api().copy_text($('#phoneQr').dataset.url || ''); $('#phoneMsg').innerHTML = ok ? '<span class="ok">הקישור הועתק</span>' : ''; };
 $('#phoneNew').onclick = async () => { const p = await api().phone_pair(true); $('#phoneQr').src = p.qr; $('#phoneQr').dataset.url = p.url; $('#phoneCode').textContent = p.code; $('#phoneMsg').innerHTML = '<span class="ok">נוצר קוד חדש. טלפונים ישנים נותקו.</span>'; };
