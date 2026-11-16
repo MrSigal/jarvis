@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "6.7"
+VERSION = "6.8"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -3127,10 +3127,20 @@ def _vtuple(v):
 def latest_release():
     """The newest installer published on GitHub Releases, or None."""
     import httpx
-    r = httpx.get(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
-                  headers={"Accept": "application/vnd.github+json"}, timeout=12, follow_redirects=True)
-    if r.status_code != 200:
-        return None
+    try:
+        r = httpx.get(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+                      headers={"Accept": "application/vnd.github+json"}, timeout=12, follow_redirects=True)
+    except Exception as e:
+        log.warning(f"releases api: {e}")
+        r = None
+    if r is None or r.status_code != 200:
+        # GitHub limits how often the API can be asked (60 times an hour): use the plain files instead
+        log.warning(f"releases api said {getattr(r, 'status_code', '-')}; using version.txt")
+        v = httpx.get(_raw("version.txt") + f"?t={int(time.time())}", timeout=10, follow_redirects=True)
+        if v.status_code != 200 or not re.fullmatch(r"\d+(\.\d+)+", v.text.strip()):
+            return None
+        return {"version": v.text.strip(),
+                "url": f"https://github.com/{UPDATE_REPO}/releases/latest/download/JARVIS-Setup.exe", "size": 0}
     d = r.json()
     asset = next((a for a in d.get("assets", []) if a.get("name", "").lower() == "jarvis-setup.exe"), None)
     if not asset:
