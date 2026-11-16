@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "7.1"
+VERSION = "7.2"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -91,6 +91,7 @@ DEFAULT_CONFIG = {
     "run_in_background": True,              # closing the window keeps JARVIS listening (icon near the clock)
     "start_with_windows": True,             # start hidden when the PC starts
     "auto_hide": True,                      # window pops up on "Hey Jarvis" and hides again afterwards
+    "niqqud_voice": True,                   # add vowel marks (ניקוד) only to what is spoken, for correct pronunciation
     "tts_engine": "edge",                   # edge (fast, built-in) | gemini (Google) | eleven (ElevenLabs, paid credits)
     "el_api_key": "",
     "el_voice_id": "EXAVITQu4vr4xnSDxMaL",   # Sarah (female); the user can pick any voice from their account
@@ -605,8 +606,9 @@ class Speaker:
         # v3 sometimes stops in the middle of a sentence. Hebrew speech is ~12-16 letters a second;
         # if the recording is far too short for the text, the end was swallowed -> make it once more.
         secs = self._mp3_seconds(audio, small)
-        if len(text) > 30 and secs < len(text) / 24.0 and (self._el_left is None or self._el_left > need):
-            log.warning(f"ElevenLabs cut the answer ({secs:.1f}s for {len(text)} letters) - redoing it")
+        letters = len(strip_niqqud(text))
+        if letters > 30 and secs < letters / 24.0 and (self._el_left is None or self._el_left > need):
+            log.warning(f"ElevenLabs cut the answer ({secs:.1f}s for {letters} letters) - redoing it")
             again = self._eleven_once(text, small, seed=self.EL_SEED + 1)
             if self._mp3_seconds(again, small) > secs:
                 audio = again
@@ -623,6 +625,9 @@ class Speaker:
         return self._edge(text, female=CFG.get("el_female", True))
 
     def synth(self, text, small=False):
+        text = strip_niqqud(text)
+        if CFG.get("niqqud_voice", True):
+            text = add_niqqud(text)                  # what is SPOKEN gets niqqud; what is SHOWN stays plain
         if CFG.get("tts_engine") == "eleven" and CFG.get("el_api_key"):
             try:
                 audio = self._eleven(text, small)
@@ -695,13 +700,13 @@ class Speaker:
                     failed = True
                     continue
                 if show and not shown:
-                    ui.say("jarvis", text)          # text appears together with the voice
+                    ui.say("jarvis", strip_niqqud(text))   # text appears together with the voice
                     shown = True
                 self._play(audio)
                 if self._stop:
                     break
             if show and not shown:
-                ui.say("jarvis", text)
+                ui.say("jarvis", strip_niqqud(text))
             if failed and not shown:
                 ui.toast("ההקראה נכשלה (אין אינטרנט?)", "warn")
             ui.state("idle")
@@ -941,6 +946,58 @@ class Ears:
             log.info(f"ignored low-confidence speech ({conf:.2f}): {text}")
             return None
         return hebrew_only(text)
+
+
+# ======================================================================= NIQQUD (vowel marks)
+_NIQQUD_RE = re.compile("[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]")
+NAKDAN_URLS = ["https://nakdan-2-0.loadbalancer.dicta.org.il/api",
+               "https://nakdan-u1-0.loadbalancer.dicta.org.il/api"]
+
+
+def strip_niqqud(text):
+    """The same text without vowel marks - this is what the user sees."""
+    return _NIQQUD_RE.sub("", text or "")
+
+
+def add_niqqud(text):
+    """Vowel marks for the voice only (Dicta's free Nakdan), so names and words are pronounced right.
+    Any problem -> the plain text, never a broken answer."""
+    import httpx
+    if not text or not re.search(r"[\u05d0-\u05ea]", text):
+        return text
+    body = {"task": "nakdan", "data": text, "genre": "modern", "addmorph": False,
+            "keepnikud": True, "keepmetagim": False, "keepqq": False}
+    for url in NAKDAN_URLS:
+        try:
+            r = httpx.post(url, json=body, timeout=4)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+            words = d.get("data", d) if isinstance(d, dict) else d
+            out = []
+            for w in words:
+                plain = w.get("word", "")
+                opts = w.get("options") or []
+                best = plain
+                if not w.get("sep") and opts:
+                    o = opts[0]
+                    if isinstance(o, dict):
+                        o = o.get("w") or o.get("word") or plain
+                    elif isinstance(o, (list, tuple)):
+                        o = o[0] if o else plain
+                    if isinstance(o, str):
+                        o = o.replace("|", "").replace("\u05BD", "")
+                        if strip_niqqud(o).replace("\u05BE", "") == strip_niqqud(plain).replace("\u05BE", ""):
+                            best = o            # only accept it if it is the very same word
+                out.append(best)
+            res = "".join(out)
+            if strip_niqqud(res) == strip_niqqud(text):
+                return res
+            log.warning("nakdan: answer didn't match the text, speaking without niqqud")
+            return text
+        except Exception as e:
+            log.warning(f"nakdan {url}: {e}")
+    return text
 
 
 def hebrew_only(text):
@@ -3532,7 +3589,7 @@ class Assistant:
             if ans is None:
                 ans = self.ask_brain(text)
         import re as _re
-        ans = _re.sub(r"\[[^\]]*\]|[*#_`>]", "", ans or "").strip()
+        ans = strip_niqqud(_re.sub(r"\[[^\]]*\]|[*#_`>]", "", ans or "")).strip()
         if ans:
             ui.say("jarvis", ans)
         return ans
@@ -3572,7 +3629,7 @@ class Assistant:
         if answer:   # never read out brackets, markdown or links
             import re as _re
             answer = _re.sub(r"\[[^\]]*\]|https?://\S+|[*#_`>]", "", answer)
-            answer = _re.sub(r"\s{2,}", " ", answer).strip()
+            answer = strip_niqqud(_re.sub(r"\s{2,}", " ", answer)).strip()
         if not answer or "IGNORE" in answer:
             log.info(f"ignored: {text}")
             ui.state("idle")
