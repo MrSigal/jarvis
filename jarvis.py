@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "7.0"
+VERSION = "7.1"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -97,7 +97,7 @@ DEFAULT_CONFIG = {
     "el_voice_name": "Sarah",
     "el_female": True,
     "el_model": "eleven_v3",
-    "el_mood": "happy",                     # happy | excited | calm | neutral (ElevenLabs v3 tone)                # 1 credit per character, speaks Hebrew
+    "el_mood": "neutral",                     # happy | excited | calm | neutral (ElevenLabs v3 tone)                # 1 credit per character, speaks Hebrew
     "gemini_api_key": "",                   # free key from aistudio.google.com/apikey
     "gemini_voice": "Charon",
     "gemini_model": "",                     # remembered automatically once one works
@@ -207,6 +207,11 @@ def load_config():
     if not cfg.get("_pause_v70") and float(cfg.get("pause_seconds", 2.0)) < 2.0:   # v7.0: don't cut the user off
         cfg["pause_seconds"] = 2.0
     cfg["_pause_v70"] = True
+    if not cfg.get("_voice_v71"):                           # v7.1: one steady, natural Hebrew voice
+        cfg["_voice_v71"] = True
+        cfg["el_mood"] = "neutral"                          # mood tags made v3 change the voice from answer to answer
+    if cfg.get("el_model") != "eleven_v3":                  # only v3 speaks Hebrew; other models sound foreign
+        cfg["el_model"] = "eleven_v3"
     if cfg.get("follow_up_seconds", 25) < 15:              # v4.3: conversation mode
         cfg["follow_up_seconds"] = 25
     if cfg.get("claude_model") == "claude-sonnet-5-5":   # move old installs to the cheap model
@@ -427,6 +432,10 @@ class Speaker:
     def __init__(self):
         import pygame
         self.pygame = pygame
+        try:
+            pygame.mixer.pre_init(44100, -16, 2, 2048)  # bigger buffer: no clicks or clipped word endings
+        except Exception:
+            pass
         pygame.mixer.init()
         self.lock = threading.Lock()
         self._stop = False
@@ -522,30 +531,57 @@ class Speaker:
 
     EL_MOODS = {"happy": "[happy]", "excited": "[excited]", "calm": "[calm]", "neutral": ""}
 
+    EL_SEED = 4242
+    _el_lang_ok = True                                  # False if the account/model rejects language_code
+
+    @staticmethod
+    def _clean_for_voice(text):
+        """Whole sentences only: v3 tends to swallow the end of a text that doesn't end with punctuation."""
+        import re
+        t = re.sub(r"\s+", " ", text).strip()
+        if t and t[-1] not in ".!?…":
+            t += "."
+        return t
+
     @classmethod
-    def _eleven_body(cls, text):
+    def _eleven_body(cls, text, seed=None):
         model = CFG.get("el_model") or "eleven_v3"
-        body = {"text": text, "model_id": model}
+        body = {"text": cls._clean_for_voice(text), "model_id": model}
         if model == "eleven_v3":
-            tag = cls.EL_MOODS.get(CFG.get("el_mood", "happy"), "")
+            tag = cls.EL_MOODS.get(CFG.get("el_mood", "neutral"), "")
             if tag:
-                body["text"] = f"{tag} {text}"          # v3 audio tag: sets the tone, isn't read aloud
-            # "Robust" stability + a fixed seed: the same voice every time, no drifting between answers
-            body["voice_settings"] = {"stability": 1.0, "similarity_boost": 0.85, "use_speaker_boost": True}
-            body["seed"] = 4242
+                body["text"] = f"{tag} {body['text']}"   # v3 audio tag: sets the tone, isn't read aloud
+            # "Natural" stability (closest to the real recorded voice) + Hebrew forced + a fixed seed:
+            # same woman every time, no foreign accent, no drifting between answers
+            body["voice_settings"] = {"stability": 0.5, "similarity_boost": 0.9, "use_speaker_boost": True}
+            body["seed"] = seed if seed is not None else cls.EL_SEED
+            if cls._el_lang_ok:
+                body["language_code"] = "he"
         else:
             body["voice_settings"] = {"stability": 0.35, "similarity_boost": 0.8, "style": 0.45, "use_speaker_boost": True}
         return body
 
-    def _eleven(self, text, small=False):
+    def _eleven_once(self, text, small, seed=None):
         import httpx
-        need = len(text) + 20
-        left = self.eleven_credits()
-        if left is not None and left < need:           # never go past what's already paid for
-            raise QuotaOut("ElevenLabs credits used up")
-        r = httpx.post(f"https://api.elevenlabs.io/v1/text-to-speech/{CFG['el_voice_id']}?output_format={'mp3_44100_64' if small else 'mp3_44100_128'}",
-                       headers={"xi-api-key": CFG["el_api_key"].strip(), "accept": "audio/mpeg"},
-                       json=self._eleven_body(text), timeout=40)
+        url = (f"https://api.elevenlabs.io/v1/text-to-speech/{CFG['el_voice_id']}"
+               f"?output_format={'mp3_44100_64' if small else 'mp3_44100_128'}")
+        headers = {"xi-api-key": CFG["el_api_key"].strip(), "accept": "audio/mpeg"}
+        r = None
+        for attempt in range(2):                      # one retry on a network hiccup, so we don't jump to another voice
+            try:
+                r = httpx.post(url, headers=headers, json=self._eleven_body(text, seed), timeout=60)
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                if attempt:
+                    raise RuntimeError(f"ElevenLabs network: {e}")
+                time.sleep(0.6)
+                continue
+            if r.status_code == 400 and Speaker._el_lang_ok and "language" in r.text.lower():
+                Speaker._el_lang_ok = False           # this model/account doesn't take language_code -> send without it
+                continue
+            if r.status_code in (500, 502, 503, 504) and not attempt:
+                time.sleep(0.6)
+                continue
+            break
         if r.status_code in (401, 402, 429) and ("quota" in r.text or "credits" in r.text or r.status_code == 402):
             Speaker._el_left = 0
             Speaker._el_checked = time.time()
@@ -554,9 +590,29 @@ class Speaker:
             raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:200]}")
         if Speaker._el_left is not None:
             Speaker._el_left = max(0, Speaker._el_left - len(text))
+        return r.content
+
+    @staticmethod
+    def _mp3_seconds(audio, small):
+        return len(audio) * 8 / ((64 if small else 128) * 1000)      # ElevenLabs mp3 is constant bitrate
+
+    def _eleven(self, text, small=False):
+        need = len(text) + 20
+        left = self.eleven_credits()
+        if left is not None and left < need:           # never go past what's already paid for
+            raise QuotaOut("ElevenLabs credits used up")
+        audio = self._eleven_once(text, small)
+        # v3 sometimes stops in the middle of a sentence. Hebrew speech is ~12-16 letters a second;
+        # if the recording is far too short for the text, the end was swallowed -> make it once more.
+        secs = self._mp3_seconds(audio, small)
+        if len(text) > 30 and secs < len(text) / 24.0 and (self._el_left is None or self._el_left > need):
+            log.warning(f"ElevenLabs cut the answer ({secs:.1f}s for {len(text)} letters) - redoing it")
+            again = self._eleven_once(text, small, seed=self.EL_SEED + 1)
+            if self._mp3_seconds(again, small) > secs:
+                audio = again
         if (Speaker._el_left or 0) > 2000:              # credits renewed -> warn again next time they run out
             Speaker._el_warned = False
-        return r.content
+        return audio
 
     def free_synth(self, text):
         if CFG.get("gemini_api_key"):
@@ -569,13 +625,15 @@ class Speaker:
     def synth(self, text, small=False):
         if CFG.get("tts_engine") == "eleven" and CFG.get("el_api_key"):
             try:
-                return self._eleven(text, small)
+                audio = self._eleven(text, small)
+                log.info(f"voice: ElevenLabs ({len(text)} letters)")
+                return audio
             except QuotaOut:
                 if not Speaker._el_warned:
                     Speaker._el_warned = True
                     notify("🔊 נגמרו הקרדיטים של ElevenLabs. עברתי לקול החינמי עד שהם יתחדשו (בלי לשלם עוד).")
             except Exception as e:
-                log.error(f"ElevenLabs TTS failed: {e}")
+                log.error(f"ElevenLabs TTS failed - this answer uses the free voice: {e}")
             return self.free_synth(text)
         if CFG.get("tts_engine") == "gemini" and CFG.get("gemini_api_key"):
             try:
@@ -666,6 +724,8 @@ class Speaker:
             m.play()
             while m.get_busy() and not self._stop:
                 time.sleep(0.03)
+            if not self._stop:
+                time.sleep(0.25)                  # let the last syllable leave the speakers before stopping
             m.stop()
             try:
                 m.unload()
@@ -3634,7 +3694,7 @@ class Api:
             "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
             "has_el": bool(CFG.get("el_api_key")), "el_voice_id": CFG.get("el_voice_id", ""),
             "el_voice_name": CFG.get("el_voice_name", ""),
-            "el_female": bool(CFG.get("el_female", True)), "el_mood": CFG.get("el_mood", "happy"),
+            "el_female": bool(CFG.get("el_female", True)), "el_mood": CFG.get("el_mood", "neutral"),
             "has_gemini": bool(CFG.get("gemini_api_key")), "gemini_mask": _mask(CFG.get("gemini_api_key", "")),
             "gemini_voice": CFG.get("gemini_voice", "Charon"),
             "user_name": CFG["user_name"], "wake_threshold": CFG["wake_threshold"],
