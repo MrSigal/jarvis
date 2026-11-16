@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "6.1"
+VERSION = "6.2"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -497,13 +497,13 @@ class Speaker:
             Speaker._el_checked = time.time()
         return self._el_left
 
-    def _eleven(self, text):
+    def _eleven(self, text, small=False):
         import httpx
         need = len(text) + 20
         left = self.eleven_credits()
         if left is not None and left < need:           # never go past what's already paid for
             raise QuotaOut("ElevenLabs credits used up")
-        r = httpx.post(f"https://api.elevenlabs.io/v1/text-to-speech/{CFG['el_voice_id']}?output_format=mp3_44100_128",
+        r = httpx.post(f"https://api.elevenlabs.io/v1/text-to-speech/{CFG['el_voice_id']}?output_format={'mp3_22050_32' if small else 'mp3_44100_128'}",
                        headers={"xi-api-key": CFG["el_api_key"].strip(), "accept": "audio/mpeg"},
                        json={"text": text, "model_id": CFG.get("el_model") or "eleven_v3"}, timeout=40)
         if r.status_code in (401, 402, 429) and ("quota" in r.text or "credits" in r.text or r.status_code == 402):
@@ -526,10 +526,10 @@ class Speaker:
                 log.error(f"Gemini TTS failed: {e}")
         return self._edge(text, female=CFG.get("el_female", True))
 
-    def synth(self, text):
+    def synth(self, text, small=False):
         if CFG.get("tts_engine") == "eleven" and CFG.get("el_api_key"):
             try:
-                return self._eleven(text)
+                return self._eleven(text, small)
             except QuotaOut:
                 if not Speaker._el_warned:
                     Speaker._el_warned = True
@@ -2478,6 +2478,22 @@ class PhoneLink:
                 raise ValueError("file too big")
         return out
 
+    def send_voice(self, rid, text):
+        """Jarvis's real voice for the phone: all sentences are made at the same time, the first is sent first."""
+        from concurrent.futures import ThreadPoolExecutor
+        parts = Speaker.split_for_speech(text)
+        try:
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                jobs = [ex.submit(self.voice, p) for p in parts]
+                for n, job in enumerate(jobs):
+                    audio = job.result(timeout=60)
+                    wav = audio[:4] == b"RIFF"
+                    self.send_blob(audio, "voice.wav" if wav else "voice.mp3", "audio/wav" if wav else "audio/mpeg",
+                                   "voice", {"id": rid, "part": n, "last": n == len(jobs) - 1})
+        except Exception as e:
+            log.warning(f"phone voice: {e}")
+            self.reply({"type": "novoice", "id": rid})
+
     def push(self, obj):
         """Notification to the iPhone app (shown if the app is open)."""
         if CFG.get("phone_link", True):
@@ -2513,14 +2529,7 @@ class PhoneLink:
                 ans = f"שגיאה: {e}"
             self.reply({"type": "answer", "id": m.get("id"), "text": (ans or "")[:1200]})
             if m.get("voice") and self.voice and ans:
-                try:                                  # the phone plays Jarvis's real voice
-                    audio = self.voice(ans[:1200])
-                    wav = audio[:4] == b"RIFF"
-                    self.send_blob(audio, "voice.wav" if wav else "voice.mp3", "audio/wav" if wav else "audio/mpeg",
-                                   "voice", {"id": m.get("id")})
-                except Exception as e:
-                    log.warning(f"phone voice: {e}")
-                    self.reply({"type": "novoice", "id": m.get("id")})
+                self.send_voice(m.get("id"), ans[:1200])
         elif m.get("type") == "screen":
             try:
                 ui.action("📱 צילום מסך לטלפון")
@@ -2579,15 +2588,18 @@ class PhoneLink:
 
     def loop(self):
         import httpx
-        delay = 3
+        delay, last_id, topic = 1, None, None
         while True:
             if not CFG.get("phone_link", True):
                 time.sleep(10)
                 continue
             self.restart = False
+            if topic != self.topic:                  # new pairing code -> start fresh
+                topic, last_id = self.topic, None
             try:
-                with httpx.stream("GET", f"https://ntfy.sh/{self.topic}-c/json", timeout=httpx.Timeout(10, read=90)) as r:
-                    delay = 3
+                url = f"https://ntfy.sh/{self.topic}-c/json" + (f"?since={last_id}" if last_id else "")
+                with httpx.stream("GET", url, timeout=httpx.Timeout(10, read=90)) as r:
+                    delay = 1
                     for line in r.iter_lines():
                         if self.restart:
                             break
@@ -2597,6 +2609,7 @@ class PhoneLink:
                             ev = json.loads(line)
                             if ev.get("event") != "message":
                                 continue
+                            last_id = ev.get("id") or last_id
                             msg = self.open(ev["message"])
                         except Exception:
                             continue                 # not ours / tampered
@@ -2604,7 +2617,7 @@ class PhoneLink:
             except Exception as e:
                 log.info(f"phone link reconnect: {e}")
             time.sleep(delay)
-            delay = min(60, delay * 2)
+            delay = min(20, delay * 2)
 
 
 PHONE = PhoneLink()
@@ -3263,7 +3276,7 @@ class Assistant:
         threading.Thread(target=CALENDAR.loop, daemon=True).start()
         threading.Thread(target=APPSTORE.loop, daemon=True).start()
         PHONE.answer = self.answer_text
-        PHONE.voice = lambda t: self.speaker.synth(t)
+        PHONE.voice = lambda t: self.speaker.synth(t, small=True)
         threading.Thread(target=PHONE.loop, daemon=True).start()
         threading.Thread(target=self.run, daemon=True).start()
         threading.Thread(target=self.stats_loop, daemon=True).start()

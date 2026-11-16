@@ -219,20 +219,26 @@ let pcVersion = '';
 function setStatus(ok, ver){ if (ver) pcVersion = ver; const st = $('#status'); st.classList.toggle('on', ok); st.classList.toggle('off', !ok); $('#statusTxt').textContent = ok ? 'מחובר למחשב' + (pcVersion ? ' · ' + pcVersion : '') : 'המחשב לא מחובר'; }
 let voiceOn = store.get('jarvis_voice', '1') === '1';
 $('#voiceBtn').textContent = voiceOn ? '🔊' : '🔈';
-$('#voiceBtn').onclick = () => { voiceOn = !voiceOn; store.set('jarvis_voice', voiceOn ? '1' : '0'); $('#voiceBtn').textContent = voiceOn ? '🔊' : '🔈'; try { speechSynthesis.cancel(); player.pause(); } catch(e){} add('sys', voiceOn ? '🔊 הקול פועל.' : '🔈 הקול כבוי — רק טקסט.'); };
+$('#voiceBtn').onclick = () => { voiceOn = !voiceOn; store.set('jarvis_voice', voiceOn ? '1' : '0'); $('#voiceBtn').textContent = voiceOn ? '🔊' : '🔈'; try { speechSynthesis.cancel(); player.pause(); if (currentSrc) currentSrc.stop(); } catch(e){} add('sys', voiceOn ? '🔊 הקול פועל.' : '🔈 הקול כבוי — רק טקסט.'); };
 // iPhone only lets a page make sound after a tap, so the first tap "unlocks" the speaker.
 // Jarvis's real voice comes from the PC as audio; the iPhone's own voice is only a fallback.
 const player = new Audio(); player.setAttribute('playsinline', ''); player.preload = 'auto';
+let actx = null;
 const SILENT = 'data:audio/wav;base64,UklGRmQGAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 let audioUnlocked = false;
+function getCtx(){
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
+  if (!actx) actx = new AC();
+  return actx;
+}
 function unlockAudio(){
+  // iPhone allows sound only from a tap: wake up both the audio engine and the <audio> player once
+  try { const c = getCtx(); if (c) { c.resume(); const b = c.createBuffer(1, 1, 22050); const src = c.createBufferSource(); src.buffer = b; src.connect(c.destination); src.start(0); } } catch(e){}
   if (audioUnlocked) return; audioUnlocked = true;
   try { player.src = SILENT; player.play().catch(() => { audioUnlocked = false; }); } catch(e){ audioUnlocked = false; }
-  try { if (window.speechSynthesis) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } } catch(e){}
 }
 document.addEventListener('touchend', unlockAudio, {passive: true});
 document.addEventListener('click', unlockAudio);
-const voiceWait = {};
 function doneSpeaking(){ setState('idle'); resumeHandsFree(); }
 function speakFallback(text){
   if (!window.speechSynthesis) { doneSpeaking(); return; }
@@ -243,24 +249,59 @@ function speakFallback(text){
   if (speechSynthesis.speaking) speechSynthesis.cancel();
   setTimeout(() => speechSynthesis.speak(u), 60);
 }
+// Jarvis's real voice arrives from the PC in pieces (first sentence first, so it starts sooner)
+const voiceQ = {};
+const vq = id => voiceQ[id] || (voiceQ[id] = {parts: {}, next: 0, last: -1, playing: false, text: ''});
 function speak(text, id){
   if (!voiceOn) { doneSpeaking(); return; }
   if (!id) { speakFallback(text); return; }
-  voiceWait[id] = {text, t: setTimeout(() => { const w = voiceWait[id]; delete voiceWait[id]; if (w) speakFallback(w.text); }, 9000)};
+  const q = vq(id); q.text = text;
+  q.t = setTimeout(() => { if (!q.playing && q.next === 0 && !q.parts[0]) { q.dead = true; delete voiceQ[id]; speakFallback(text); } }, 25000);
+  pump(id);
 }
-function noVoice(id){ const w = voiceWait[id]; if (!w) return; clearTimeout(w.t); delete voiceWait[id]; speakFallback(w.text); }
-async function playVoice(m){
-  const w = voiceWait[m.id]; if (!w) return;               // too late: the fallback already spoke
-  clearTimeout(w.t); delete voiceWait[m.id];
-  try {
-    const pt = await fetchBlob(m);
-    const url = URL.createObjectURL(new Blob([pt], {type: m.mime}));
-    player.onended = () => { URL.revokeObjectURL(url); doneSpeaking(); };
-    player.onerror = () => { speakFallback(w.text); };
-    player.src = url; setState('speaking');
-    await player.play();
-  } catch(e){ speakFallback(w.text); }
+function noVoice(id){
+  const q = voiceQ[id]; if (!q) return;
+  if (!q.playing && q.next === 0) { clearTimeout(q.t); q.dead = true; delete voiceQ[id]; speakFallback(q.text); }
+  else { q.last = Math.max(q.last, q.next - 1); }
 }
+function playVoice(m){
+  const q = vq(m.id); if (q.dead) return;
+  const n = m.part || 0;
+  if (m.last === undefined || m.last) q.last = n;
+  q.parts[n] = fetchBlob(m).then(b => ({buf: b, mime: m.mime})).catch(() => null);
+  pump(m.id);
+}
+async function pump(id){
+  const q = voiceQ[id]; if (!q || q.playing || q.dead) return;
+  if (q.last >= 0 && q.next > q.last) { delete voiceQ[id]; doneSpeaking(); return; }
+  const p = q.parts[q.next];
+  if (!p) {
+    clearTimeout(q.gap);
+    if (q.next > 0) q.gap = setTimeout(() => { if (!q.playing && !q.parts[q.next]) { delete voiceQ[id]; doneSpeaking(); } }, 20000);
+    return;
+  }
+  q.playing = true; clearTimeout(q.t); clearTimeout(q.gap); setState('speaking');
+  const got = await p;
+  if (got) await playAudio(got.buf, got.mime);
+  else if (q.next === 0) { q.playing = false; q.dead = true; delete voiceQ[id]; speakFallback(q.text); return; }
+  q.playing = false; q.next++;
+  pump(id);
+}
+async function playAudio(buf, mime){
+  try {                                                     // Web Audio: works without a tap once unlocked
+    const c = getCtx(); if (!c) throw new Error('no ctx');
+    if (c.state !== 'running') await c.resume();
+    if (c.state !== 'running') throw new Error('ctx ' + c.state);
+    const ab = await c.decodeAudioData(buf.slice(0));
+    await new Promise(res => { const src = c.createBufferSource(); src.buffer = ab; src.connect(c.destination); src.onended = res; src.start(); currentSrc = src; });
+    return;
+  } catch(e){}
+  try {                                                     // fallback: the <audio> player
+    const url = URL.createObjectURL(new Blob([buf], {type: mime || 'audio/mpeg'}));
+    await new Promise(res => { player.onended = player.onerror = () => { URL.revokeObjectURL(url); res(); }; player.src = url; player.play().catch(res); });
+  } catch(e){}
+}
+let currentSrc = null;
 
 // ---------- relay through ntfy.sh (end-to-end encrypted)
 const pending = {};
@@ -581,7 +622,6 @@ lockUI();
 
 // ---------- boot: tap once (iPhone allows sound only after a tap), then music + loading; it can't be skipped
 try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch(e){}   // play even on silent mode
-let actx = null;
 // the user's own song (sent once from the PC, kept on the phone); otherwise the built-in JARVIS sound
 const idb = (mode, fn) => new Promise((res, rej) => {
   const o = indexedDB.open('jarvis', 1);
@@ -621,7 +661,7 @@ async function gotIntro(m){
 function playIntro(){
   try {
     const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
-    actx = actx || new AC(); actx.resume();
+    actx = getCtx(); actx.resume();
     const gain = actx.createGain(); gain.connect(actx.destination);
     introData.then(buf => buf && actx.decodeAudioData(buf.slice(0))).then(ab => {
       if (!ab) return; const src = actx.createBufferSource(); src.buffer = ab; src.connect(gain); src.start();
