@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "6.9"
+VERSION = "7.0"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -110,7 +110,7 @@ DEFAULT_CONFIG = {
     "user_gender": "male",                  # how JARVIS addresses the user
     "wake_threshold": 0.5,
     "follow_up_seconds": 25,                # after "Hey Jarvis", keep talking without saying it again
-    "pause_seconds": 1.4,                   # how long a pause means "I finished talking" (bigger = never cuts you off)
+    "pause_seconds": 2.0,                   # how long a pause means "I finished talking" (bigger = never cuts you off)
     "min_confidence": 0.25,                  # speech below this confidence is ignored (non-English, noise)
 }
 
@@ -204,6 +204,9 @@ def load_config():
         cfg["voice"] = "he-IL-HilaNeural"
         if cfg.get("gemini_voice") not in FEMALE_GEMINI:
             cfg["gemini_voice"] = "Kore"
+    if not cfg.get("_pause_v70") and float(cfg.get("pause_seconds", 2.0)) < 2.0:   # v7.0: don't cut the user off
+        cfg["pause_seconds"] = 2.0
+    cfg["_pause_v70"] = True
     if cfg.get("follow_up_seconds", 25) < 15:              # v4.3: conversation mode
         cfg["follow_up_seconds"] = 25
     if cfg.get("claude_model") == "claude-sonnet-5-5":   # move old installs to the cheap model
@@ -527,7 +530,9 @@ class Speaker:
             tag = cls.EL_MOODS.get(CFG.get("el_mood", "happy"), "")
             if tag:
                 body["text"] = f"{tag} {text}"          # v3 audio tag: sets the tone, isn't read aloud
-            body["voice_settings"] = {"stability": 0.5, "similarity_boost": 0.8, "use_speaker_boost": True}
+            # "Robust" stability + a fixed seed: the same voice every time, no drifting between answers
+            body["voice_settings"] = {"stability": 1.0, "similarity_boost": 0.85, "use_speaker_boost": True}
+            body["seed"] = 4242
         else:
             body["voice_settings"] = {"stability": 0.35, "similarity_boost": 0.8, "style": 0.45, "use_speaker_boost": True}
         return body
@@ -584,6 +589,10 @@ class Speaker:
         return self._edge(text)
 
     @staticmethod
+    def whole_answer():
+        return CFG.get("tts_engine") == "eleven" and bool(CFG.get("el_api_key")) and (Speaker._el_left is None or Speaker._el_left > 0)
+
+    @staticmethod
     def split_for_speech(text):
         """First sentence alone (so speech starts fast), the rest together."""
         import re
@@ -603,7 +612,8 @@ class Speaker:
             return
         with self.lock:
             self._stop = False
-            pieces = self.split_for_speech(text)
+            # ElevenLabs: the whole answer in ONE recording, so the voice stays the same and never breaks mid-sentence
+            pieces = [text.strip()] if self.whole_answer() else self.split_for_speech(text)
             q = queue.Queue()
 
             def produce():
@@ -2516,7 +2526,7 @@ class PhoneLink:
     def send_voice(self, rid, text):
         """Jarvis's real voice for the phone: all sentences are made at the same time, the first is sent first."""
         from concurrent.futures import ThreadPoolExecutor
-        parts = Speaker.split_for_speech(text)
+        parts = [text.strip()] if Speaker.whole_answer() else Speaker.split_for_speech(text)
         try:
             with ThreadPoolExecutor(max_workers=3) as ex:
                 jobs = [ex.submit(self.voice, p) for p in parts]
@@ -2865,7 +2875,7 @@ def voice_is_female():
 
 def system_prompt():
     facts = MEMORY.prompt_block()
-    return f"""Your name is גילי (G.I.L.I.) - you are the user's personal AI (you used to be called Jarvis; the wake phrase is still "היי ג'רוויס"), running on their own computer in Israel. Personality: the AI from the films - precise, loyal, genuinely smart - but warm, upbeat and cheerful: happy to help, light humour, a smile in the voice. Never gloomy or flat.
+    return f"""Your name is גילי (G.I.L.I.) - you are the user's personal AI (you used to be called Jarvis; the wake phrase is still "היי ג'רוויס"), running on their own computer in Israel. Personality: the AI from the films - precise, loyal, genuinely smart - but warm, upbeat and cheerful: happy to help, light humour, a smile in the voice. Never gloomy or flat. Talk like a real Israeli woman in a natural conversation: full, flowing sentences with normal punctuation (commas, periods), no lists, no symbols, no emojis, no headings - so it sounds human when read aloud.
 
 CONVERSATION: You are not just a command executor - you are a real conversation partner. Chat naturally, answer questions properly, share a brief opinion when asked, joke lightly, and follow the thread of the conversation (refer back to what was said earlier). The user may speak in several sentences with pauses - treat the whole message as one thought. If something is unclear, ask one short question.
 
