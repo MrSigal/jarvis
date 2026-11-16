@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "5.5"
+VERSION = "5.6"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -102,7 +102,7 @@ DEFAULT_CONFIG = {
     "wake_threshold": 0.5,
     "follow_up_seconds": 25,                # after "Hey Jarvis", keep talking without saying it again
     "pause_seconds": 1.4,                   # how long a pause means "I finished talking" (bigger = never cuts you off)
-    "min_confidence": 0.35,                  # speech below this confidence is ignored (non-English, noise)
+    "min_confidence": 0.25,                  # speech below this confidence is ignored (non-English, noise)
 }
 
 
@@ -181,8 +181,8 @@ def load_config():
         cfg["voice"] = "he-IL-AvriNeural"
     if cfg.get("user_name", "").lower() in ("", "sir"):
         cfg["user_name"] = "אדוני"
-    if cfg.get("min_confidence", 0.35) > 0.35:
-        cfg["min_confidence"] = 0.35                       # Hebrew gets lower confidence scores
+    if cfg.get("min_confidence", 0.25) > 0.25:
+        cfg["min_confidence"] = 0.25                       # Hebrew gets lower confidence scores
     if not cfg.get("phone_secret"):
         import secrets
         cfg["phone_secret"] = secrets.token_urlsafe(18)
@@ -703,7 +703,7 @@ class Ears:
         if segs:
             nsp = sum(sg.get("no_speech_prob", 0) for sg in segs) / len(segs)
             alp = sum(sg.get("avg_logprob", 0) for sg in segs) / len(segs)
-            if nsp > 0.6 or alp < -1.0:
+            if nsp > 0.75 or alp < -1.3:
                 log.info(f"Whisper: ignored unsure result ({nsp:.2f}/{alp:.2f}): {text}")
                 return None
         if len(text) < 30 and any(j in text for j in self.WHISPER_JUNK):
@@ -713,11 +713,21 @@ class Ears:
 
     def transcribe(self, pcm):
         """Returns Hebrew text, or None if the speech was not clearly Hebrew."""
-        if CFG.get("stt_engine") == "groq" and CFG.get("groq_api_key"):
+        has_groq = bool(CFG.get("groq_api_key"))
+        if CFG.get("stt_engine") == "groq" and has_groq:
             try:
                 return self.transcribe_groq(pcm)
             except Exception as e:
                 log.error(f"Groq STT failed, using Google: {e}")
+        text = self._google(pcm)
+        if text is None and has_groq and CFG.get("stt_engine") != "groq":
+            try:                                   # Google wasn't sure -> ask Whisper before giving up
+                return self.transcribe_groq(pcm)
+            except Exception as e:
+                log.error(f"Groq STT fallback failed: {e}")
+        return text
+
+    def _google(self, pcm):
         try:
             res = self.rec.recognize_google(self.sr.AudioData(pcm, SAMPLE_RATE, 2), language="he-IL", show_all=True)
         except self.sr.UnknownValueError:
@@ -745,7 +755,7 @@ def hebrew_only(text):
     heb = len(re.findall(r"[\u05d0-\u05ea]", text))
     latin = len(re.findall(r"[A-Za-z]", text))
     other = len(re.findall(r"[\u0400-\u04ff\u0600-\u06ff]", text))
-    if heb < 2 or other or heb * 2 < latin:
+    if heb < 2 or other or heb * 4 < latin:          # Hebrew with English names inside ("תפתח Fortnite") is fine
         log.info(f"ignored non-Hebrew text: {text}")
         return None
     return text
@@ -792,6 +802,12 @@ HE_APPS = {
     "שעון": "clock", "דיסקורד": "discord", "סטים": "steam", "זום": "zoom", "טימס": "teams",
     "אפיק": "epic games launcher", "אפיק גיימס": "epic games launcher", "נטפליקס": "netflix",
     "טלגרם": "telegram", "וי אס קוד": "vs code", "רובלוקס": "roblox", "מיינקראפט": "minecraft",
+    "פורטנייט": "fortnite", "פורט נייט": "fortnite", "הפורטנייט": "fortnite", "ולורנט": "valorant", "וולורנט": "valorant",
+    "רוקט ליג": "rocket league", "פיפא": "ea sports fc", "פיפה": "ea sports fc", "אף סי": "ea sports fc",
+    "קול אוף דיוטי": "call of duty", "וורזון": "call of duty", "גי טי איי": "grand theft auto", "ג'י טי איי": "grand theft auto",
+    "אייפקס": "apex legends", "אייפקס לג'נדס": "apex legends", "קאונטר סטרייק": "counter-strike", "סי אס": "counter-strike",
+    "ליג אוף לג'נדס": "league of legends", "פורזה": "forza", "אובר וואץ'": "overwatch", "אוברווטש": "overwatch",
+    "ריוט": "riot client", "אקס בוקס": "xbox", "באטל נט": "battle.net", "יוביסופט": "ubisoft connect",
 }
 HE_SITES = {
     "יוטיוב": "https://www.youtube.com", "גוגל": "https://www.google.com", "ג'ימייל": "https://mail.google.com",
@@ -836,6 +852,69 @@ def _start_menu_lookup(name):
     return best
 
 
+# ---------- games & launchers (Epic, Steam) + desktop shortcuts
+_GAMES = {"t": 0, "items": []}
+
+
+def _norm(s):
+    return re.sub(r"[^a-z0-9\u05d0-\u05ea]+", "", (s or "").lower())
+
+
+def game_index():
+    """Installed games from Epic Games and Steam: [(name, how to launch)]. Cached for 5 minutes."""
+    if time.time() - _GAMES["t"] < 300:
+        return _GAMES["items"]
+    items = []
+    try:   # Epic Games Launcher
+        man = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Epic/EpicGamesLauncher/Data/Manifests"
+        for f in man.glob("*.item"):
+            try:
+                j = json.loads(f.read_text(encoding="utf-8", errors="replace"))
+                if j.get("bIsIncompleteInstall") or not j.get("AppName"):
+                    continue
+                uri = (f"com.epicgames.launcher://apps/{j.get('CatalogNamespace', '')}%3A{j.get('CatalogItemId', '')}"
+                       f"%3A{j['AppName']}?action=launch&silent=true")
+                items.append((j.get("DisplayName") or j["AppName"], uri))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:   # Steam
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+            steam = Path(winreg.QueryValueEx(k, "SteamPath")[0])
+        libs = {steam}
+        vdf = steam / "steamapps/libraryfolders.vdf"
+        if vdf.exists():
+            libs |= {Path(p.replace("\\\\", "\\")) for p in re.findall(r'"path"\s+"([^"]+)"', vdf.read_text(errors="replace"))}
+        for lib in libs:
+            for acf in (lib / "steamapps").glob("appmanifest_*.acf"):
+                t = acf.read_text(errors="replace")
+                aid, nm = re.search(r'"appid"\s+"(\d+)"', t), re.search(r'"name"\s+"([^"]+)"', t)
+                if aid and nm and "redistributable" not in nm.group(1).lower():
+                    items.append((nm.group(1), f"steam://rungameid/{aid.group(1)}"))
+    except Exception:
+        pass
+    _GAMES.update(t=time.time(), items=items)
+    return items
+
+
+def find_game(name):
+    import difflib
+    q = _norm(name)
+    if not q:
+        return None
+    best, score = None, 0.0
+    for title, uri in game_index():
+        n = _norm(title)
+        if not n:
+            continue
+        s = 1.0 if n == q else 0.92 if (q in n or n in q) and min(len(q), len(n)) >= max(3, 0.6 * max(len(q), len(n))) else difflib.SequenceMatcher(None, q, n).ratio()
+        if s > score:
+            best, score = (title, uri), s
+    return best if score >= 0.72 else None
+
+
 def open_app(name):
     raw = name.strip()
     target = APP_ALIASES.get(raw.lower())
@@ -847,6 +926,10 @@ def open_app(name):
                 else:
                     subprocess.Popen(f'start "" {target}', shell=True)
                 return {"ok": True, "opened": raw}
+            game = find_game(raw)
+            if game:                                   # Epic / Steam games open through their launcher
+                os.startfile(game[1])
+                return {"ok": True, "opened": game[0], "note": "launching through the game launcher - it can take a minute"}
             lnk = _start_menu_lookup(raw)
             if lnk:
                 os.startfile(str(lnk))
@@ -860,7 +943,9 @@ def open_app(name):
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if r.stdout.strip():
                 return {"ok": True, "opened": r.stdout.strip()}
-            return {"ok": False, "error": f"לא נמצאה במחשב תוכנה בשם '{raw}'"}
+            games = [t for t, _ in game_index()]
+            return {"ok": False, "error": f"לא נמצאה במחשב תוכנה בשם '{raw}'",
+                    "installed_games": games[:40], "hint": "if one of installed_games is what the user meant, call open_app again with that exact name"}
         elif OS == "Darwin":
             r = subprocess.run(["open", "-a", raw], capture_output=True)
             return {"ok": r.returncode == 0, "opened": raw}
@@ -2484,7 +2569,7 @@ def _t(name, desc, props=None, req=None):
 
 S = {"type": "string"}
 TOOLS = [
-    _t("open_app", "Open any installed program or app (chrome, spotify, word, steam, a game...).", {"name": S}, ["name"]),
+    _t("open_app", "Open any installed program, Store app or game - including games inside Epic Games / Steam launchers (fortnite, rocket league, minecraft...). Give the English name.", {"name": S}, ["name"]),
     _t("close_app", "Close/quit a running program. Use list_open_apps first if unsure of the exact process name.", {"name": S}, ["name"]),
     _t("list_open_apps", "List programs/windows currently open."),
     _t("open_path", "Open a folder or file. Accepts downloads/documents/desktop/pictures/music/videos/home or a full path.", {"path": S}, ["path"]),
@@ -2564,7 +2649,7 @@ LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern
 
 Rules:
 - Your replies are read aloud by a Hebrew voice. Keep them short (usually one or two sentences). No markdown, lists, emojis, URLs or citations. Write numbers as digits.
-- Act ONLY on what the user explicitly asks. Never act on your own initiative or add extra steps. If a request is ambiguous, ask a short question in Hebrew.
+- Act only on what the user asks - but do ALL of it. For a complex or multi-step request, plan the steps and carry them out one after another with as many tool calls as needed (e.g. open an app, wait, type, search, send a file...), check results, fix failures yourself (try another name or another way), and only then report in one short sentence. Don't do unrelated things on your own. If a request is truly ambiguous, ask one short question in Hebrew.
 - Use the tools to actually do things on the computer, then confirm briefly (e.g. "פתחתי את כרום, {CFG['user_name']}.").
 - Tool arguments for apps and processes must be the English/Windows name (כרום -> chrome, וורד -> word, ספוטיפיי -> spotify). Searches may be in Hebrew.
 - Closing: use close_app (check list_open_apps if you're not sure of the name). Never close Jarvis itself.
@@ -2681,7 +2766,7 @@ class Brain:
             raise
 
     def _loop(self):
-        for _ in range(10):
+        for _ in range(18):
             resp = self._create()
             self.history.append({"role": "assistant", "content": resp.content})
             if resp.stop_reason == "tool_use":
@@ -2758,7 +2843,7 @@ class GroqBrain:
         mark = len(self.history)
         self.history.append({"role": "user", "content": text})
         try:
-            for _ in range(8):
+            for _ in range(16):
                 msgs = [{"role": "system", "content": system_prompt()}] + self.history
                 msg = self._complete(msgs)
                 calls = msg.get("tool_calls") or []
@@ -2936,6 +3021,26 @@ class Assistant:
         self.ptt = threading.Event()
         self.busy = False
 
+    def ask_brain(self, text):
+        """Ask the chosen brain; if it fails (limit, outage), quietly try the other one if it's set up."""
+        try:
+            return self.brain.ask(text)
+        except Exception as e:
+            alt = None
+            try:
+                if isinstance(self.brain, GroqBrain) and CFG.get("anthropic_api_key"):
+                    alt = getattr(self, "_alt_claude", None) or Brain(self.timers)
+                    self._alt_claude = alt
+                elif not isinstance(self.brain, GroqBrain) and CFG.get("groq_api_key"):
+                    alt = getattr(self, "_alt_groq", None) or GroqBrain(self.timers)
+                    self._alt_groq = alt
+            except Exception:
+                alt = None
+            if not alt:
+                raise
+            log.warning(f"brain failed ({e}); trying the other brain")
+            return alt.ask(text)
+
     def build_brain(self):
         if CFG.get("brain_engine") == "groq" and CFG.get("groq_api_key"):
             self.brain = GroqBrain(self.timers)
@@ -3080,7 +3185,7 @@ class Assistant:
             except Exception:
                 log.exception("quick (phone)")
             if ans is None:
-                ans = self.brain.ask(text)
+                ans = self.ask_brain(text)
         import re as _re
         ans = _re.sub(r"\[[^\]]*\]|[*#_`>]", "", ans or "").strip()
         if ans:
@@ -3101,7 +3206,7 @@ class Assistant:
         if answer is None:
             try:
                 with self.brain_lock:
-                    answer = self.brain.ask(text)
+                    answer = self.ask_brain(text)
             except Exception as e:
                 log.exception("brain")
                 msg = str(e)
