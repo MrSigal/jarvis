@@ -275,7 +275,7 @@ body::after{opacity:.35}
 <circle class="stroke" r="130" stroke-width="12" opacity=".16"/>
 <g class="spin r3"><path class="stroke" d="M130.0 0.0 A130 130 0 0 1 120.5 48.7" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M91.9 91.9 A130 130 0 0 1 50.8 119.7" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M0.0 130.0 A130 130 0 0 1 -48.7 120.5" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M-91.9 91.9 A130 130 0 0 1 -119.7 50.8" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M-130.0 0.0 A130 130 0 0 1 -120.5 -48.7" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M-91.9 -91.9 A130 130 0 0 1 -50.8 -119.7" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M-0.0 -130.0 A130 130 0 0 1 48.7 -120.5" stroke-width="12" opacity="0.8" stroke-linecap="round"/><path class="stroke" d="M91.9 -91.9 A130 130 0 0 1 119.7 -50.8" stroke-width="12" opacity="0.8" stroke-linecap="round"/></g>
 <circle class="stroke glowring" r="102" stroke-width="2"/>
-<g class="core">
+<g class="core" id="core">
 <circle r="74" fill="url(#rgpc)"/>
 <circle r="44" fill="#04131D" class="stroke glowring" stroke-width="2.5"/>
 <text y="6" text-anchor="middle" font-family="Orbitron, sans-serif" font-weight="800" font-size="15" letter-spacing="3.5" fill="#E6FBFF">G.I.L.I</text>
@@ -548,7 +548,7 @@ function drawWave(){
     }
     wctx.stroke();
   }
-  $('#core').style.transform = `scale(${1 + Math.min(lvl,1)*.18})`;
+  const coreEl = $('#core'); if (coreEl) coreEl.style.transform = `scale(${1 + Math.min(lvl,1)*.18})`;
   requestAnimationFrame(drawWave);
 }
 drawWave();
