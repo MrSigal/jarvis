@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "6.6"
+VERSION = "6.7"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -394,8 +394,19 @@ def play_intro(pygame):
                 return snd, min(5.0, snd.get_length() * 0.6, secs)
             except Exception as e:                 # the song can't be played -> use the built-in sound
                 log.warning(f"intro song {path}: {e}")
-        snd = pygame.mixer.Sound(file=BytesIO(make_intro_wav()))
-        snd.play()
+        wav = make_intro_wav()
+        try:
+            snd = pygame.mixer.Sound(file=BytesIO(wav))
+        except Exception as e:                     # some setups can't make a Sound from memory -> use a temp file
+            log.warning(f"intro Sound from memory: {e}")
+            path = os.path.join(tempfile.gettempdir(), "gili_intro.wav")
+            Path(path).write_bytes(wav)
+            snd = pygame.mixer.Sound(path)
+        ch = snd.play()
+        if ch is None:                             # all channels busy -> force one
+            ch = pygame.mixer.find_channel(True)
+            ch.play(snd)
+        log.info(f"intro playing ({snd.get_length():.1f}s, mixer {pygame.mixer.get_init()})")
         return snd, 4.4                          # right after the final chord hits
     except Exception as e:
         log.exception("intro music")
@@ -2821,6 +2832,24 @@ ACTION_LABELS = {
 }
 
 
+_FEM = {"מוכן": "מוכנה", "שמח": "שמחה", "יכול": "יכולה", "צריך": "צריכה", "מבין": "מבינה", "יודע": "יודעת",
+        "חושב": "חושבת", "מקשיב": "מקשיבה", "בודק": "בודקת", "פותח": "פותחת", "סוגר": "סוגרת", "מצטער": "מצטערת",
+        "בטוח": "בטוחה", "מחפש": "מחפשת", "עובד": "עובדת", "מנסה": "מנסה", "זוכר": "זוכרת", "ממליץ": "ממליצה",
+        "מציע": "מציעה", "מתחיל": "מתחילה", "מכין": "מכינה", "שולח": "שולחת", "מעדכן": "מעדכנת", "מקווה": "מקווה",
+        "מסכים": "מסכימה", "רגוע": "רגועה", "עסוק": "עסוקה", "מחובר": "מחוברת", "מוכן לעזור": "מוכנה לעזור",
+        "אוהב": "אוהבת", "מנגן": "מנגנת", "מזכיר": "מזכירה", "רושם": "רושמת", "מתנצל": "מתנצלת", "משתדל": "משתדלת",
+        "מרגיש": "מרגישה", "נהנה": "נהנית", "גאה": "גאה", "שומע": "שומעת", "רואה": "רואה", "מתכוון": "מתכוונת"}
+_FEM_RE = re.compile(r"(אני|אני לא|אני כבר|אני עדיין|אני תמיד|אני פשוט|אני ממש|אני כאן ו|אני פה ו)\s+(" +
+                     "|".join(sorted(map(re.escape, _FEM), key=len, reverse=True)) + r")(?=[\s.,!?…:;״\"']|$)")
+
+
+def fix_gender(text):
+    """Safety net: first-person masculine forms ('אני מוכן') -> feminine when Gili speaks as a woman."""
+    if not text or not speaks_as_female():
+        return text
+    return _FEM_RE.sub(lambda m: f"{m.group(1)} {_FEM[m.group(2)]}", text)
+
+
 def speaks_as_female():
     g = CFG.get("self_gender", "female")
     return voice_is_female() if g == "auto" else g == "female"
@@ -2843,7 +2872,7 @@ CONVERSATION: You are not just a command executor - you are a real conversation 
 What you remember about the user (numbered; this is YOUR long-term memory - use it naturally whenever it's relevant, without saying "according to my memory"):
 {facts}
 
-LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern Israeli Hebrew (never English, never translated-sounding). GRAMMAR (strict): speak about YOURSELF in {"FEMININE" if speaks_as_female() else "MASCULINE"} form ({"אני מוכנה, פתחתי, הבנתי, אני שמחה, אני יכולה" if speaks_as_female() else "אני מוכן, פתחתי, הבנתי, אני שמח, אני יכול"}), and address the USER in {"MASCULINE" if CFG.get("user_gender", "male") == "male" else "FEMININE"} form ({"אתה, תרצה, שמעת, לשירותך" if CFG.get("user_gender", "male") == "male" else "את, תרצי, שמעת, לשירותך"}). Never mix these up. Call the user "{CFG['user_name']}" now and then.
+LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern Israeli Hebrew (never English, never translated-sounding). GRAMMAR (strict): speak about YOURSELF in {"FEMININE" if speaks_as_female() else "MASCULINE"} form ({"אני מוכנה, פתחתי, הבנתי, אני שמחה, אני יכולה" if speaks_as_female() else "אני מוכן, פתחתי, הבנתי, אני שמח, אני יכול"}), and address the USER in {"MASCULINE" if CFG.get("user_gender", "male") == "male" else "FEMININE"} form ({"אתה, תרצה, שמעת, לשירותך" if CFG.get("user_gender", "male") == "male" else "את, תרצי, שמעת, לשירותך"}). Never mix these up - check every verb and adjective about yourself before answering. SPELLING: perfect standard modern Hebrew spelling (כתיב מלא תקני: "עכשיו", "שאלה", "מצוין", "בדיוק"), no typos, no invented words, no English words or Latin letters unless it's a name (Fortnite, Chrome); write short clear sentences that sound good read aloud. Call the user "{CFG['user_name']}" now and then.
 
 Rules:
 - Your replies are read aloud by a Hebrew voice. Keep them short (usually one or two sentences). No markdown, lists, emojis, URLs or citations. Write numbers as digits.
@@ -3260,7 +3289,7 @@ class Assistant:
     def ask_brain(self, text):
         """Ask the chosen brain; if it fails (limit, outage), quietly try the other one if it's set up."""
         try:
-            return self.brain.ask(text)
+            return fix_gender(self.brain.ask(text))
         except Exception as e:
             alt = None
             try:
@@ -3275,7 +3304,7 @@ class Assistant:
             if not alt:
                 raise
             log.warning(f"brain failed ({e}); trying the other brain")
-            return alt.ask(text)
+            return fix_gender(alt.ask(text))
 
     def build_brain(self):
         if CFG.get("brain_engine") == "groq" and CFG.get("groq_api_key"):
@@ -4075,6 +4104,17 @@ def selftest():
     step("hud.html", lambda: (HERE / "hud.html").read_text(encoding="utf-8")[:10])
     step("tray icon image", lambda: (HERE / "assets" / "jarvis.ico").read_bytes()[:4])
     step("startup music", lambda: make_intro_wav()[:4] == b"RIFF" or (_ for _ in ()).throw(RuntimeError("bad wav")))
+
+    def _sound_test():
+        os.environ["SDL_AUDIODRIVER"] = "dummy"
+        import pygame
+        pygame.mixer.init()
+        snd = pygame.mixer.Sound(file=BytesIO(make_intro_wav()))
+        assert snd.get_length() > 5, snd.get_length()
+        assert snd.play() is not None, "no channel"
+        lines.append(f"     intro sound {snd.get_length():.1f}s mixer={pygame.mixer.get_init()}")
+    step("startup music plays", _sound_test)
+    step("hebrew gender fix", lambda: fix_gender("אני מוכן ואני לא בטוח") == "אני מוכנה ואני לא בטוחה" or (_ for _ in ()).throw(RuntimeError(fix_gender("אני מוכן ואני לא בטוח"))))
     for mod in ("numpy", "sounddevice", "speech_recognition", "edge_tts", "pygame", "webview", "anthropic",
                 "httpx", "psutil", "pyautogui", "pyperclip", "onnxruntime", "pystray", "PIL", "cryptography", "qrcode"):
         step(f"import {mod}", lambda m=mod: __import__(m))
