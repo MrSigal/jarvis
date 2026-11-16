@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "6.4"
+VERSION = "6.5"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -376,8 +376,14 @@ def intro_clip_bytes(path, seconds):
     return data[:int(bps * seconds) + 64_000]
 
 
+INTRO_ERROR = [""]
+
+
 def play_intro(pygame):
     """Plays the startup music. Returns (sound, seconds until the greeting should start)."""
+    INTRO_ERROR[0] = ""
+    if not pygame.mixer.get_init():
+        pygame.mixer.init()
     path = (CFG.get("intro_file") or "").strip()
     secs = float(CFG.get("intro_seconds", 12) or 12)
     try:
@@ -392,7 +398,9 @@ def play_intro(pygame):
         snd.play()
         return snd, 4.4                          # right after the final chord hits
     except Exception as e:
-        log.warning(f"intro music: {e}")
+        log.exception("intro music")
+        INTRO_ERROR[0] = f"{type(e).__name__}: {e}"[:200]
+        ui.toast(f"מוזיקת הפתיחה לא התנגנה: {INTRO_ERROR[0]}", "warn")
         return None, 0
 
 
@@ -3232,9 +3240,8 @@ class Assistant:
 
     def welcome(self):
         """The user opened JARVIS (desktop icon / tray) while it was running hidden: loading screen + music."""
-        was_hidden = not getattr(ui, "visible", True)
         ui.show_window()
-        if not was_hidden or time.time() - getattr(self, "_last_welcome", 0) < 20 or self.speaker.pygame.mixer.music.get_busy():
+        if time.time() - getattr(self, "_last_welcome", 0) < 20 or self.speaker.pygame.mixer.music.get_busy():
             return
         self._last_welcome = time.time()
         ui.js("replayBoot")
@@ -3939,7 +3946,8 @@ class Api:
             snd, greet_at = play_intro(pg)
             if snd:
                 threading.Timer(greet_at + 4, lambda: snd.fadeout(3500)).start()
-            return {"ok": bool(snd)}
+                return {"ok": True}
+            return {"ok": False, "error": INTRO_ERROR[0] or "לא ידוע"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 

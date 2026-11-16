@@ -750,7 +750,7 @@ function drawMemory(list){
 }
 $('#memAdd').onclick = async () => { const v = $('#memNew').value; $('#memNew').value = ''; drawMemory(await api().memory_add(v)); };
 $('#introPick').onclick = async () => { const r = await api().pick_intro(); if (r.ok) { $('#sIntroMode').value = 'file'; $('#introFile').textContent = 'הקובץ שנבחר: ' + r.file.split(/[\\/]/).pop(); } };
-$('#introTest').onclick = () => api().test_intro($('#sIntroMode').value);
+$('#introTest').onclick = async () => { const r = await api().test_intro($('#sIntroMode').value); $('#introFile').innerHTML = r.ok ? '<span class="ok">♪ מתנגן…</span>' : `<span class="bad">המוזיקה לא התנגנה: ${r.error}</span>`; };
 function refreshVoiceInd(cfg){
   const e = $('#indVoice'); e.classList.remove('on','warn','off');
   e.classList.add('on');
