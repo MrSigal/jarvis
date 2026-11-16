@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "5.8"
+VERSION = "5.9"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -91,7 +91,12 @@ DEFAULT_CONFIG = {
     "run_in_background": True,              # closing the window keeps JARVIS listening (icon near the clock)
     "start_with_windows": True,             # start hidden when the PC starts
     "auto_hide": True,                      # window pops up on "Hey Jarvis" and hides again afterwards
-    "tts_engine": "edge",                   # edge (fast, built-in) | gemini (Google, most natural)
+    "tts_engine": "edge",                   # edge (fast, built-in) | gemini (Google) | eleven (ElevenLabs, paid credits)
+    "el_api_key": "",
+    "el_voice_id": "EXAVITQu4vr4xnSDxMaL",   # Sarah (female); the user can pick any voice from their account
+    "el_voice_name": "Sarah",
+    "el_female": True,
+    "el_model": "eleven_v3",                # 1 credit per character, speaks Hebrew
     "gemini_api_key": "",                   # free key from aistudio.google.com/apikey
     "gemini_voice": "Charon",
     "gemini_model": "",                     # remembered automatically once one works
@@ -108,7 +113,7 @@ DEFAULT_CONFIG = {
 
 
 SECRET_KEYS = ("anthropic_api_key", "groq_api_key", "gemini_api_key", "mail_app_password", "phone_secret",
-               "calendar_ics", "asc_key")
+               "calendar_ics", "asc_key", "el_api_key")
 
 
 def _dpapi(data, protect):
@@ -180,7 +185,7 @@ def load_config():
         cfg.pop(old, None)                                  # v4.7: WhatsApp disconnected, credentials deleted
     for old in ("vs_url", "vs_model", "vs_voice"):
         cfg.pop(old, None)                                  # VoiceStudio was removed
-    if cfg.get("tts_engine") not in ("edge", "gemini"):
+    if cfg.get("tts_engine") not in ("edge", "gemini", "eleven"):
         cfg["tts_engine"] = "edge"
     if not str(cfg.get("voice", "")).startswith("he-IL"):     # v3: Hebrew
         cfg["voice"] = "he-IL-AvriNeural"
@@ -389,6 +394,10 @@ def play_intro(pygame):
 
 
 # ======================================================================= VOICE OUT
+class QuotaOut(Exception):
+    pass
+
+
 class Speaker:
     def __init__(self):
         import pygame
@@ -398,12 +407,13 @@ class Speaker:
         self._stop = False
 
     # ---- free Microsoft neural voice
-    def _edge(self, text):
+    def _edge(self, text, female=None):
         import edge_tts
+        voice = CFG["voice"] if female is None else ("he-IL-HilaNeural" if female else "he-IL-AvriNeural")
 
         async def run():
             buf = BytesIO()
-            async for chunk in edge_tts.Communicate(text, CFG["voice"], rate="+4%").stream():
+            async for chunk in edge_tts.Communicate(text, voice, rate="+4%").stream():
                 if chunk["type"] == "audio":
                     buf.write(chunk["data"])
             return buf.getvalue()
@@ -413,6 +423,16 @@ class Speaker:
     GEMINI_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts",
                      "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
 
+    @staticmethod
+    def _gemini_voice():
+        v = CFG.get("gemini_voice") or "Charon"
+        if CFG.get("tts_engine") == "eleven":          # standing in for ElevenLabs: keep the same gender
+            if CFG.get("el_female", True) and v not in FEMALE_GEMINI:
+                v = "Kore"
+            elif not CFG.get("el_female", True) and v in FEMALE_GEMINI:
+                v = "Charon"
+        return v
+
     def _gemini(self, text):
         import httpx, base64, re
         key = CFG["gemini_api_key"].strip()
@@ -420,7 +440,7 @@ class Speaker:
         body = {"contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"responseModalities": ["AUDIO"],
                                      "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {
-                                         "voiceName": CFG.get("gemini_voice") or "Charon"}}}}}
+                                         "voiceName": self._gemini_voice()}}}}}
         models = ([CFG["gemini_model"]] if CFG.get("gemini_model") else []) + \
                  [m for m in self.GEMINI_MODELS if m != CFG.get("gemini_model")]
         last = ""
@@ -458,7 +478,63 @@ class Speaker:
             raise RuntimeError("quota")
         raise RuntimeError("Gemini לא החזיר קול:" + last)
 
+    # ---- ElevenLabs: uses only the credits already in the account; when they run out -> free voice
+    _el_left, _el_checked, _el_warned = None, 0.0, False
+
+    def eleven_credits(self, force=False):
+        """Characters left this month (None if unknown)."""
+        import httpx
+        if force or self._el_left is None or time.time() - self._el_checked > 600:
+            r = httpx.get("https://api.elevenlabs.io/v1/user/subscription", timeout=15,
+                          headers={"xi-api-key": CFG["el_api_key"].strip()})
+            if r.status_code == 401:
+                raise RuntimeError("מפתח ה־ElevenLabs לא תקין")
+            r.raise_for_status()
+            j = r.json()
+            Speaker._el_left = max(0, int(j.get("character_limit", 0)) - int(j.get("character_count", 0)))
+            Speaker._el_checked = time.time()
+        return self._el_left
+
+    def _eleven(self, text):
+        import httpx
+        need = len(text) + 20
+        left = self.eleven_credits()
+        if left is not None and left < need:           # never go past what's already paid for
+            raise QuotaOut("ElevenLabs credits used up")
+        r = httpx.post(f"https://api.elevenlabs.io/v1/text-to-speech/{CFG['el_voice_id']}?output_format=mp3_44100_128",
+                       headers={"xi-api-key": CFG["el_api_key"].strip(), "accept": "audio/mpeg"},
+                       json={"text": text, "model_id": CFG.get("el_model") or "eleven_v3"}, timeout=40)
+        if r.status_code in (401, 402, 429) and ("quota" in r.text or "credits" in r.text or r.status_code == 402):
+            Speaker._el_left = 0
+            Speaker._el_checked = time.time()
+            raise QuotaOut("ElevenLabs credits used up")
+        if r.status_code >= 400:
+            raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:200]}")
+        if Speaker._el_left is not None:
+            Speaker._el_left = max(0, Speaker._el_left - len(text))
+        if (Speaker._el_left or 0) > 2000:              # credits renewed -> warn again next time they run out
+            Speaker._el_warned = False
+        return r.content
+
+    def free_synth(self, text):
+        if CFG.get("gemini_api_key"):
+            try:
+                return self._gemini(text)
+            except Exception as e:
+                log.error(f"Gemini TTS failed: {e}")
+        return self._edge(text, female=CFG.get("el_female", True))
+
     def synth(self, text):
+        if CFG.get("tts_engine") == "eleven" and CFG.get("el_api_key"):
+            try:
+                return self._eleven(text)
+            except QuotaOut:
+                if not Speaker._el_warned:
+                    Speaker._el_warned = True
+                    notify("🔊 נגמרו הקרדיטים של ElevenLabs. עברתי לקול החינמי עד שהם יתחדשו (בלי לשלם עוד).")
+            except Exception as e:
+                log.error(f"ElevenLabs TTS failed: {e}")
+            return self.free_synth(text)
         if CFG.get("tts_engine") == "gemini" and CFG.get("gemini_api_key"):
             try:
                 return self._gemini(text)
@@ -2707,6 +2783,8 @@ ACTION_LABELS = {
 
 
 def voice_is_female():
+    if CFG.get("tts_engine") == "eleven" and CFG.get("el_api_key"):
+        return bool(CFG.get("el_female", True))
     if CFG.get("tts_engine") == "gemini":
         return CFG.get("gemini_voice") in FEMALE_GEMINI
     return "Hila" in (CFG.get("voice") or "")
@@ -3462,6 +3540,9 @@ class Api:
             "mail_address": CFG.get("mail_address", ""), "has_mail_pw": bool(CFG.get("mail_app_password")),
             "mail_alerts": bool(CFG.get("mail_alerts", True)),
             "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
+            "has_el": bool(CFG.get("el_api_key")), "el_voice_id": CFG.get("el_voice_id", ""),
+            "el_voice_name": CFG.get("el_voice_name", ""),
+            "el_female": bool(CFG.get("el_female", True)),
             "has_gemini": bool(CFG.get("gemini_api_key")), "gemini_mask": _mask(CFG.get("gemini_api_key", "")),
             "gemini_voice": CFG.get("gemini_voice", "Charon"),
             "user_name": CFG["user_name"], "wake_threshold": CFG["wake_threshold"],
@@ -3492,8 +3573,15 @@ class Api:
             CFG["brain_engine"] = s["brain_engine"]
         if s.get("stt_engine") in ("google", "groq"):
             CFG["stt_engine"] = s["stt_engine"]
-        if s.get("tts_engine") in ("edge", "gemini"):
+        if s.get("tts_engine") in ("edge", "gemini", "eleven"):
             CFG["tts_engine"] = s["tts_engine"]
+        if s.get("el_key", "").strip():
+            CFG["el_api_key"] = s["el_key"].strip()
+            Speaker._el_left = None
+        if s.get("el_voice_id"):
+            CFG["el_voice_id"] = s["el_voice_id"]
+            CFG["el_voice_name"] = s.get("el_voice_name", "")
+            CFG["el_female"] = bool(s.get("el_female", True))
         if s.get("gemini_key", "").strip():
             CFG["gemini_api_key"] = s["gemini_key"].strip()
         if s.get("gemini_voice"):
@@ -3599,6 +3687,20 @@ class Api:
             return {"ok": False, "error": "הרמקול עדיין לא מוכן, נסה שוב בעוד כמה שניות."}
         text = f"לשירותך, {CFG['user_name']}. איך אני נשמע?"
         engine = CFG.get("tts_engine")
+        if engine == "eleven":
+            if not CFG.get("el_api_key"):
+                return {"ok": False, "error": "חסר מפתח של ElevenLabs."}
+            try:
+                left = sp.eleven_credits(force=True)
+                audio = sp._eleven(text)
+            except QuotaOut:
+                audio = sp.free_synth(text)
+                threading.Thread(target=sp.play_bytes, args=(audio, text), daemon=True).start()
+                return {"ok": True, "message": "נגמרו הקרדיטים — מדבר בקול החינמי עד שיתחדשו."}
+            except Exception as e:
+                return {"ok": False, "error": str(e)[:200]}
+            threading.Thread(target=sp.play_bytes, args=(audio, text), daemon=True).start()
+            return {"ok": True, "message": f"✔ ElevenLabs עובד. נשארו בערך {max(0, left - len(text)):,} קרדיטים (~{max(0, left - len(text)) // 70} תשובות)."}
         if engine == "gemini":
             if not CFG.get("gemini_api_key"):
                 return {"ok": False, "error": "חסר מפתח של Gemini."}
@@ -3636,6 +3738,25 @@ class Api:
                     os._exit(0)
         except Exception as e:
             log.error(f"window action {action}: {e}")
+
+    def el_voices(self, key=""):
+        import httpx
+        k = (key or "").strip() or CFG.get("el_api_key", "")
+        if not k:
+            return {"ok": False, "error": "צריך להדביק מפתח"}
+        try:
+            r = httpx.get("https://api.elevenlabs.io/v1/voices", headers={"xi-api-key": k}, timeout=20)
+            if r.status_code == 401:
+                return {"ok": False, "error": "המפתח לא תקין (או שאין לו הרשאת Voices)"}
+            r.raise_for_status()
+            out = [{"id": v["voice_id"], "name": v.get("name", ""),
+                    "female": (v.get("labels") or {}).get("gender", "") == "female",
+                    "desc": " ".join(x for x in ((v.get("labels") or {}).get("accent", ""),
+                                                 (v.get("labels") or {}).get("description", "")) if x)}
+                   for v in r.json().get("voices", [])]
+            return {"ok": True, "voices": sorted(out, key=lambda v: (not v["female"], v["name"]))}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
 
     def memory_list(self):
         return MEMORY.listing()["facts"]

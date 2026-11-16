@@ -327,6 +327,7 @@ body.gl .reactor .glow{opacity:.18}
         <select id="sEngine">
           <option value="edge">אברי / הילה — מהיר, בלי הרשמה</option>
           <option value="gemini">Gemini של גוגל — הכי טבעי (מפתח חינמי)</option>
+          <option value="eleven">ElevenLabs — הקול הכי איכותי (קרדיטים בתשלום)</option>
         </select>
       </div>
       <div id="edgeRow">
@@ -352,6 +353,11 @@ body.gl .reactor .glow{opacity:.18}
           <option value="Aoede">איאודה — אישה, קלילה</option>
           <option value="Sulafat">סולפת — אישה, חמה</option>
         </select>
+      </div>
+      <div id="elRow" style="display:none">
+        <div class="help">משתמש רק בקרדיטים שכבר יש לך בחשבון. <b>כשהם נגמרים ג'רוויס עובר לבד לקול החינמי</b> ולא קונה עוד, וכשהם מתחדשים בחודש הבא הוא חוזר ל־ElevenLabs. בערך 70 קרדיטים לכל תשובה.<br>מפתח: <a data-link="https://elevenlabs.io/app/settings/api-keys">elevenlabs.io ← API Keys</a> ← Create API Key ← מסמנים הרשאות <b>Text to Speech</b>, <b>Voices</b> (Read) ו־<b>User</b> (Read) ← מעתיקים.<br>כדי לא לשלם בטעות: באתר שלהם, ב־Subscription, ודא ש־<b>Usage-based billing</b> כבוי.</div>
+        <input id="sElKey" type="password" placeholder="sk_…" style="margin-bottom:8px">
+        <div class="row"><select id="sElVoice"><option value="">— קודם הדבק מפתח —</option></select><button class="btn ghost" id="elLoad" style="flex:0 0 auto">טען קולות</button></div>
       </div>
       <div class="row" style="margin-top:8px">
         <div id="vsMsg" style="font-size:14px;align-self:center"></div>
@@ -585,7 +591,10 @@ function openSettings(cfg){
   $('#sBg').checked = cfg.bg !== false; $('#sAuto').checked = cfg.autostart !== false; $('#sHide').checked = cfg.auto_hide !== false;
   $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'שמור ' + cfg.claude_mask + ' (השאר ריק כדי לא לשנות)' : 'sk-ant-…';
   if (cfg.voice) $('#sVoice').value = cfg.voice;
-  $('#sEngine').value = cfg.tts_engine || 'edge';
+  $('#sEngine').value = cfg.tts_engine || 'edge'; window.__cfg = cfg;
+  $('#sElKey').value = ''; $('#sElKey').placeholder = cfg.has_el ? 'המפתח שמור (השאר ריק כדי לא לשנות)' : 'sk_…';
+  $('#sElVoice').innerHTML = cfg.el_voice_id ? `<option value="${cfg.el_voice_id}" data-name="${cfg.el_voice_name || ''}" data-female="${cfg.el_female ? '1' : ''}">${cfg.el_voice_name || 'הקול שנבחר'}</option>` : '<option value="">— קודם הדבק מפתח —</option>';
+  if (cfg.has_el) loadElVoices(cfg.el_voice_id);
   $('#sGemKey').value = ''; $('#sGemKey').placeholder = cfg.has_gemini ? 'שמור ' + cfg.gemini_mask + ' (השאר ריק כדי לא לשנות)' : 'AIza…';
   $('#sGemVoice').value = cfg.gemini_voice || 'Charon';
   showEngine();
@@ -613,12 +622,23 @@ function showBrain(){
 }
 $('#sBrain').onchange = showBrain;
 function showEngine(){
-  const g = $('#sEngine').value === 'gemini';
-  $('#edgeRow').style.display = g ? 'none' : 'block';
+  const e = $('#sEngine').value, g = e === 'gemini';
+  $('#edgeRow').style.display = e === 'edge' ? 'block' : 'none';
   $('#gemRow').style.display = g ? 'block' : 'none';
+  $('#elRow').style.display = e === 'eleven' ? 'block' : 'none';
   $('#vsMsg').textContent = '';
 }
 $('#sEngine').onchange = showEngine;
+async function loadElVoices(keep){
+  const r = await api().el_voices($('#sElKey').value);
+  const sel = $('#sElVoice');
+  if (!r.ok) { $('#vsMsg').innerHTML = `<span class="bad">${r.error}</span>`; return; }
+  sel.innerHTML = '';
+  r.voices.forEach(v => { const o = document.createElement('option'); o.value = v.id; o.dataset.female = v.female ? '1' : ''; o.dataset.name = v.name;
+    o.textContent = `${v.name} — ${v.female ? 'אישה' : 'גבר'}${v.desc ? ', ' + v.desc : ''}`; sel.appendChild(o); });
+  if (keep) sel.value = keep;
+}
+$('#elLoad').onclick = () => loadElVoices(window.__cfg && __cfg.el_voice_id);
 $('#phoneCopy').onclick = async () => { const ok = await api().copy_text($('#phoneQr').dataset.url || ''); $('#phoneMsg').innerHTML = ok ? '<span class="ok">הקישור הועתק</span>' : ''; };
 $('#phoneNew').onclick = async () => { const p = await api().phone_pair(true); $('#phoneQr').src = p.qr; $('#phoneQr').dataset.url = p.url; $('#phoneCode').textContent = p.code; $('#phoneMsg').innerHTML = '<span class="ok">נוצר קוד חדש. טלפונים ישנים נותקו.</span>'; };
 $('#mailTest').onclick = async () => {
@@ -641,6 +661,9 @@ async function save(quiet){
     pause: $('#sPause').value, bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked,
     brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
+    el_key: $('#sElKey').value, el_voice_id: $('#sElVoice').value,
+    el_voice_name: ($('#sElVoice').selectedOptions[0] || {dataset: {}}).dataset.name || '',
+    el_female: !!(($('#sElVoice').selectedOptions[0] || {dataset: {}}).dataset.female),
     user_name: $('#sName').value, wake_threshold: $('#sSens').value, routines: $('#sRoutines').value,
     intro_music: $('#sIntro').checked, intro_mode: $('#sIntroMode').value,
     calendar_ics: $('#sCal').value, calendar_alerts: $('#sCalAlerts').checked,
