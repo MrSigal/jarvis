@@ -3013,7 +3013,13 @@ def uia_call(fn, timeout=25):
     global _UIA_POOL
     if _UIA_POOL is None:
         from concurrent.futures import ThreadPoolExecutor
-        _UIA_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uia")
+        def init():                                    # COM has to be switched on in the thread that uses it
+            try:
+                import comtypes
+                comtypes.CoInitialize()
+            except Exception as e:
+                log.warning(f"uia thread init: {e}")
+        _UIA_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uia", initializer=init)
     return _UIA_POOL.submit(fn).result(timeout)
 
 
