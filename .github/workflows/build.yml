@@ -42,6 +42,9 @@ jobs:
           --icon assets/jarvis.ico
           --add-data "hud.html;."
           --add-data "assets/jarvis.ico;assets"
+          --add-data "assets/speaker.onnx;assets"
+          --collect-all uiautomation
+          --collect-submodules comtypes
           --collect-all openwakeword
           --collect-all webview
           --collect-all clr_loader

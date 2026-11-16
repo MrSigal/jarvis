@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "7.3"
+VERSION = "8.0"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -91,6 +91,8 @@ DEFAULT_CONFIG = {
     "run_in_background": True,              # closing the window keeps JARVIS listening (icon near the clock)
     "start_with_windows": True,             # start hidden when the PC starts
     "auto_hide": True,                      # window pops up on "Hey Jarvis" and hides again afterwards
+    "voice_lock": False,                    # answer only the owner's voice (after "תלמדי את הקול שלי")
+    "voice_lock_threshold": 0.32,           # higher = stricter
     "niqqud_voice": True,                   # add vowel marks (ניקוד) only to what is spoken, for correct pronunciation
     "tts_engine": "edge",                   # edge (fast, built-in) | gemini (Google) | eleven (ElevenLabs, paid credits)
     "el_api_key": "",
@@ -840,6 +842,42 @@ class Ears:
         self._g_recent = deque(maxlen=3)
         self._g_frames, self._g_on, self._g_voiced, self._g_silent = [], False, 0, 0.0
 
+    def transcribe_raw(self, pcm):
+        """Whatever was said, in any language - for meeting notes (no 'is it addressed to me' filtering)."""
+        if CFG.get("groq_api_key"):
+            try:
+                t = self.transcribe_groq(pcm, raw=True)
+                if t is not None:
+                    return t
+            except Exception as e:
+                log.warning(f"meeting STT (Groq): {e}")
+        return self._wake_text(pcm)
+
+    def _meeting_job(self, frames):
+        """Runs on a side thread so the microphone never stops while a sentence is being written down."""
+        try:
+            np = self.np
+            audio = np.concatenate(frames)
+            text = (self.transcribe_raw(audio.tobytes()) or "").strip()
+            if not text:
+                return
+            m = self.GILI_RE.search(text)
+            if m and len(text[:m.start()].split()) <= 2:           # someone called her in the middle of the meeting
+                if not VOICE.allowed(audio, wake=True):
+                    self._async_wake = VoiceID.DENIED
+                    return
+                rest = text[m.end():].strip(" ,.!?")
+                self._async_wake = rest if len(re.findall(r"[\u05d0-\u05ea]", rest)) >= 2 else ""
+                return
+            MEETING.add(text)
+        except Exception:
+            log.exception("meeting transcript")
+
+    def async_wake(self):
+        w = getattr(self, "_async_wake", None)
+        self._async_wake = None
+        return w
+
     def heard_gili(self, chunk):
         """Feed one 80ms chunk. Returns None while waiting, or the words said after "גילי" ("" if only the name)."""
         if not hasattr(self, "_g_pre"):
@@ -863,19 +901,29 @@ class Ears:
         else:
             self._g_silent += step
         length = len(self._g_frames) * step
-        if self._g_silent < 0.6 and length < 7.0:
+        meeting = MEETING.on
+        if self._g_silent < (0.8 if meeting else 0.6) and length < (14.0 if meeting else 7.0):
             return None
         frames, voiced = self._g_frames, self._g_voiced
         self._gili_reset()
         if voiced < 4:                                     # a cough or a click: not a call
             return None
-        text = self._wake_text(self.np.concatenate(frames).tobytes())
+        if meeting:                                        # write it down in the background, keep listening
+            if getattr(self, "_meet_pool", None) is None:
+                from concurrent.futures import ThreadPoolExecutor
+                self._meet_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meeting")
+            self._meet_pool.submit(self._meeting_job, frames)
+            return None
+        audio = self.np.concatenate(frames)
+        text = self._wake_text(audio.tobytes())
         if not text:
             return None
         m = self.GILI_RE.search(text)
         if not m or len(text[:m.start()].split()) > 2:     # the name has to come at the start
             return None
         log.info(f"wake: {text}")
+        if not VOICE.allowed(audio, wake=True):
+            return VoiceID.DENIED
         rest = text[m.end():].strip(" ,.!?")
         return rest if len(re.findall(r"[\u05d0-\u05ea]", rest)) >= 2 else ""
 
@@ -940,15 +988,18 @@ class Ears:
                 silent += step
             if silent >= silence_end or total >= max_seconds:
                 break
+        self.last_pcm = None
         if voiced < 4:                       # under ~0.3s of speech = a cough / click, ignore
             ui.state("idle")
             return None
         ui.state("thinking")
+        tail = max(0, int(silent / step) - 3)            # the recording without the long pause at its end
+        self.last_pcm = np.concatenate(frames[:len(frames) - tail] if tail else frames)
         return self.transcribe(np.concatenate(frames).tobytes())
 
     WHISPER_JUNK = ("תודה רבה", "תודה שצפיתם", "כתוביות", "תרגום", "subtitles", "תודה על הצפייה")
 
-    def transcribe_groq(self, pcm):
+    def transcribe_groq(self, pcm, raw=False):
         """Groq Whisper (free). Returns text, None for silence/noise, or raises to fall back to Google."""
         import httpx
         buf = BytesIO()
@@ -973,7 +1024,7 @@ class Ears:
         if len(text) < 30 and any(j in text for j in self.WHISPER_JUNK):
             log.info(f"Whisper: ignored typical hallucination: {text}")
             return None          # Whisper invents these on silence
-        return hebrew_only(text)
+        return text if raw else hebrew_only(text)
 
     def transcribe(self, pcm):
         """Returns Hebrew text, or None if the speech was not clearly Hebrew."""
@@ -2944,6 +2995,520 @@ class Timers:
         return {"ok": True, "seconds": seconds}
 
 
+# ======================================================================= SCREEN CONTROL (Gili works the PC herself)
+AGENT_STOP = threading.Event()          # the stop button: a running task ends at its next step
+GUI_TOOLS = {"screen_elements", "click_element", "read_window_text", "look_at_screen", "scroll", "press_keys",
+             "type_text", "wait"}
+_ELEMENTS = {}                          # numbers from the last screen_elements call -> where to click
+_UIA_POOL = None
+_STEPPED_ASIDE = False
+_UIA_KINDS = {"ButtonControl": "button", "SplitButtonControl": "button", "HyperlinkControl": "link",
+              "EditControl": "textbox", "ComboBoxControl": "dropdown", "CheckBoxControl": "checkbox",
+              "RadioButtonControl": "radio", "MenuItemControl": "menu", "TabItemControl": "tab",
+              "ListItemControl": "item", "TreeItemControl": "item", "DataItemControl": "item"}
+
+
+def uia_call(fn, timeout=25):
+    """All Windows UI-Automation work happens on one dedicated thread (COM objects must not hop threads)."""
+    global _UIA_POOL
+    if _UIA_POOL is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _UIA_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uia")
+    return _UIA_POOL.submit(fn).result(timeout)
+
+
+def _fg_window():
+    import ctypes
+    u = ctypes.windll.user32
+    hwnd = u.GetForegroundWindow()
+    buf = ctypes.create_unicode_buffer(300)
+    u.GetWindowTextW(hwnd, buf, 300)
+    return hwnd, buf.value
+
+
+def step_aside():
+    """Gili's own window must not be the one she clicks in: get out of the way so the user's window is in front."""
+    global _STEPPED_ASIDE
+    if OS != "Windows":
+        return
+    try:
+        if _fg_window()[1] != "G.I.L.I":
+            return
+        if CFG.get("run_in_background", True):
+            ui.hide_window()
+        else:
+            ui.window.minimize()
+        _STEPPED_ASIDE = True
+        time.sleep(0.6)
+    except Exception as e:
+        log.warning(f"step aside: {e}")
+
+
+def step_back():
+    global _STEPPED_ASIDE
+    if _STEPPED_ASIDE:
+        _STEPPED_ASIDE = False
+        try:
+            ui.show_window()
+        except Exception:
+            pass
+
+
+def _uia_scan(root=False):
+    """Walk the window in front. Returns (title, clickable elements, visible text)."""
+    import uiautomation as auto
+    if root:
+        top, title = auto.GetRootControl(), "desktop"
+    else:
+        hwnd, title = _fg_window()
+        if not hwnd:
+            return "", [], ""
+        top = auto.ControlFromHandle(hwnd)
+        if top is None:
+            return title, [], ""
+    try:
+        import pyautogui
+        sw, sh = pyautogui.size()
+    except Exception:
+        sw, sh = 100000, 100000
+    t0, seen, items, texts = time.time(), 0, [], []
+    stack = [(top, 0)]
+    while stack and seen < 4000 and time.time() - t0 < 7 and len(items) < 400:
+        c, depth = stack.pop()
+        seen += 1
+        try:
+            kind = c.ControlTypeName
+            name = " ".join((c.Name or "").split())
+            r = c.BoundingRectangle
+            l, t, rr, b = r.left, r.top, r.right, r.bottom
+            off = bool(c.IsOffscreen)
+        except Exception:
+            continue
+        visible = (rr - l) > 2 and (b - t) > 2 and rr > 0 and b > 0 and l < sw and t < sh and not off
+        if off and depth > 1 and kind not in ("WindowControl", "PaneControl", "DocumentControl", "GroupControl"):
+            continue                                   # scrolled out of view: nothing in there can be clicked
+        if visible:
+            if kind in _UIA_KINDS and (name or kind == "EditControl"):
+                secret = False
+                value = ""
+                if kind == "EditControl":
+                    try:
+                        secret = bool(c.IsPassword)
+                    except Exception:
+                        pass
+                    if not secret:
+                        try:
+                            value = " ".join((c.GetValuePattern().Value or "").split())[:60]
+                        except Exception:
+                            pass
+                items.append({"kind": _UIA_KINDS[kind], "name": name[:70], "x": (l + rr) // 2, "y": (t + b) // 2,
+                              "secret": secret, "value": value})
+                if value:
+                    texts.append(value)
+            elif kind in ("TextControl", "DocumentControl", "ImageControl", "HeaderItemControl") and name:
+                texts.append(name)
+            if kind in _UIA_KINDS and name and kind != "EditControl":
+                texts.append(name)
+        if depth < 60:
+            try:
+                kids = c.GetChildren()
+            except Exception:
+                kids = []
+            stack.extend((k, depth + 1) for k in reversed(kids))
+    out, last = [], None
+    for x in texts:                                    # the same label often appears on a control and its child
+        if x != last:
+            out.append(x)
+        last = x
+    return title, items, "\n".join(out)
+
+
+def screen_elements(filter=""):
+    """Numbered list of what can be clicked or typed into in the window in front."""
+    if OS != "Windows":
+        return {"ok": False, "error": "only supported on Windows"}
+    step_aside()
+    title, items, _ = uia_call(_uia_scan)
+    f = (filter or "").strip().lower()
+    if f:
+        items = [i for i in items if f in i["name"].lower() or f in i["kind"]]
+    _ELEMENTS.clear()
+    lines = []
+    cap = 60 if f else 90
+    for n, it in enumerate(items[:cap], 1):
+        _ELEMENTS[n] = it
+        label = it["name"] or "(no label)"
+        if it["secret"]:
+            label += " [PASSWORD FIELD - never type into it]"
+        elif it["value"]:
+            label += f" = \"{it['value']}\""
+        lines.append(f"{n} {it['kind']} {label}")
+    res = {"ok": True, "window": title[:80], "elements": "\n".join(lines) or "(nothing clickable found)"}
+    if len(items) > cap:
+        res["note"] = f"{len(items) - cap} more elements not shown - call again with filter=<part of the name> to find a specific one."
+    if not lines:
+        res["hint"] = "This window doesn't expose its buttons. Use look_at_screen to see it and press_keys (tab, enter, arrows, shortcuts) to work it."
+    return res
+
+
+def click_element(id, double=False, right=False):
+    it = _ELEMENTS.get(int(id))
+    if not it:
+        return {"ok": False, "error": "no such element number - call screen_elements again (numbers change after every action)"}
+    g = _gui()
+    g.moveTo(it["x"], it["y"], duration=0.35)          # the user sees the pointer travel
+    if right:
+        g.click(button="right")
+    elif double:
+        g.doubleClick()
+    else:
+        g.click()
+    time.sleep(0.5)
+    return {"ok": True, "clicked": f"{it['kind']} {it['name']}"[:90],
+            "next": "The screen may have changed: call screen_elements again before the next click."}
+
+
+def read_window_text():
+    if OS != "Windows":
+        return {"ok": False, "error": "only supported on Windows"}
+    step_aside()
+    title, _, text = uia_call(_uia_scan)
+    if len(text) < 20:
+        return {"ok": True, "window": title[:80], "text": text,
+                "hint": "Almost no readable text here - use look_at_screen instead."}
+    return {"ok": True, "window": title[:80], "text": text[:3500], "cut": len(text) > 3500}
+
+
+def scroll(direction="down", amount=5):
+    amount = max(1, min(30, int(amount or 5)))
+    _gui().scroll((120 if direction == "up" else -120) * amount)
+    time.sleep(0.3)
+    return {"ok": True}
+
+
+def wait_seconds(seconds=1):
+    end = time.time() + max(0.2, min(15.0, float(seconds or 1)))
+    while time.time() < end and not AGENT_STOP.is_set():
+        time.sleep(0.1)
+    return {"ok": True}
+
+
+GROQ_VISION_MODELS = ["qwen/qwen3.6-27b", "qwen/qwen3.8-27b", "meta-models/muse-spark-open",
+                      "meta-llama/llama-4-scout-17b-16e-instruct"]
+GEMINI_VISION_MODELS = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-flash-latest"]
+
+
+def vision_ask(jpeg, question):
+    """Ask a model that can see pictures about an image. Uses whichever key the user already has."""
+    import httpx, base64
+    b64 = base64.b64encode(jpeg).decode()
+    q = (question or "מה רואים על המסך?") + "\n\nענה בעברית, בקצרה ולעניין. זה צילום של מסך המחשב של המשתמש."
+    errors = []
+    if CFG.get("anthropic_api_key") and CFG.get("brain_engine") != "groq":
+        try:
+            import anthropic
+            r = anthropic.Anthropic(api_key=CFG["anthropic_api_key"]).messages.create(
+                model=CFG["claude_model"], max_tokens=700, messages=[{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                    {"type": "text", "text": q}]}])
+            return " ".join(b.text for b in r.content if b.type == "text").strip()
+        except Exception as e:
+            errors.append(f"claude: {e}")
+    if CFG.get("gemini_api_key"):
+        models = ([CFG["vision_model_gemini"]] if CFG.get("vision_model_gemini") else []) + GEMINI_VISION_MODELS
+        for model in dict.fromkeys(models):
+            try:
+                r = httpx.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                               params={"key": CFG["gemini_api_key"].strip()}, timeout=60,
+                               json={"contents": [{"parts": [{"inlineData": {"mimeType": "image/jpeg", "data": b64}},
+                                                             {"text": q}]}]})
+                if r.status_code == 200:
+                    parts = r.json()["candidates"][0]["content"]["parts"]
+                    text = " ".join(p.get("text", "") for p in parts).strip()
+                    if text:
+                        if CFG.get("vision_model_gemini") != model:
+                            CFG["vision_model_gemini"] = model
+                            save_config()
+                        return text
+                errors.append(f"gemini {model}: {r.status_code}")
+            except Exception as e:
+                errors.append(f"gemini {model}: {e}")
+    if CFG.get("groq_api_key"):
+        models = ([CFG["vision_model_groq"]] if CFG.get("vision_model_groq") else []) + GROQ_VISION_MODELS
+        for model in dict.fromkeys(models):
+            try:
+                r = httpx.post(GroqBrain.URL, headers={"Authorization": f"Bearer {CFG['groq_api_key']}"}, timeout=60,
+                               json={"model": model, "max_completion_tokens": 900, "temperature": 0.2,
+                                     "messages": [{"role": "user", "content": [
+                                         {"type": "text", "text": q},
+                                         {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}}]}]})
+                if r.status_code == 200:
+                    text = (r.json()["choices"][0]["message"].get("content") or "").strip()
+                    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+                    if text:
+                        if CFG.get("vision_model_groq") != model:
+                            CFG["vision_model_groq"] = model
+                            save_config()
+                        return text
+                errors.append(f"groq {model}: {r.status_code}")
+                log.warning(f"vision {model}: {r.status_code} {r.text[:200]}")
+            except Exception as e:
+                errors.append(f"groq {model}: {e}")
+    if not errors:
+        raise RuntimeError("כדי שאראה את המסך צריך מפתח חינמי של Gemini או של Groq בהגדרות.")
+    raise RuntimeError("לא הצלחתי לראות את המסך: " + "; ".join(errors)[:300])
+
+
+def look_at_screen(question=""):
+    step_aside()
+    time.sleep(0.2)
+    return {"ok": True, "seen": vision_ask(screenshot_jpeg(max_w=1400, quality=65), question)}
+
+
+# ======================================================================= PLAIN LLM CALL (no tools)
+def llm_text(prompt, system="", max_tokens=900):
+    """One plain answer from whichever brain is set up. Waits out the free tier's per-minute limit."""
+    import httpx
+    use_groq = bool(CFG.get("groq_api_key")) and (CFG.get("brain_engine") == "groq" or not CFG.get("anthropic_api_key"))
+    if not use_groq and CFG.get("anthropic_api_key"):
+        import anthropic
+        kw = dict(model=CFG["claude_model"], max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}])
+        if system:
+            kw["system"] = system
+        r = anthropic.Anthropic(api_key=CFG["anthropic_api_key"]).messages.create(**kw)
+        return " ".join(b.text for b in r.content if b.type == "text").strip()
+    if not CFG.get("groq_api_key"):
+        raise RuntimeError("no brain configured")
+    msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+    last = ""
+    for round_ in range(4):
+        for model in CFG.get("groq_models") or GroqBrain.DEFAULT_MODELS:
+            body = {"model": model, "messages": msgs, "max_completion_tokens": max_tokens, "temperature": 0.3}
+            if model.startswith("openai/gpt-oss"):
+                body["reasoning_effort"] = "low"
+            r = httpx.post(GroqBrain.URL, headers={"Authorization": f"Bearer {CFG['groq_api_key']}"}, json=body, timeout=90)
+            if r.status_code == 200:
+                text = (r.json()["choices"][0]["message"].get("content") or "").strip()
+                text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+                if text:
+                    return text
+            last = f"{model}: {r.status_code}"
+            log.warning(f"llm_text {last} {r.text[:160]}")
+        time.sleep(8 + 8 * round_)                     # every model is at its limit for this minute
+    raise RuntimeError("groq_rate_limit" if "429" in last else "Groq: " + last)
+
+
+# ======================================================================= MEETINGS (listen quietly, then sum up)
+class Meeting:
+    MAX_HOURS = 3
+
+    def __init__(self):
+        self.on = False
+        self.lines = []
+        self.started = 0.0
+        self.lock = threading.Lock()
+
+    def start(self):
+        with self.lock:
+            self.on, self.lines, self.started = True, [], time.time()
+        log.info("meeting: listening")
+
+    def add(self, text):
+        text = (text or "").strip()
+        if not self.on or len(text) < 2:
+            return
+        with self.lock:
+            self.lines.append((time.time() - self.started, text))
+        if time.time() - self.started > self.MAX_HOURS * 3600:      # forgotten on: keep what was heard and stop
+            path = self.save("", self.stop())
+            notify(f"הפסקתי להקשיב לפגישה אחרי {self.MAX_HOURS} שעות. התמלול נשמר: {path.name}")
+
+    def stop(self):
+        with self.lock:
+            self.on = False
+            lines, self.lines = self.lines, []
+        return "\n".join(f"[{int(t // 60):02d}:{int(t % 60):02d}] {x}" for t, x in lines)
+
+    @staticmethod
+    def save(summary, transcript):
+        folder = KNOWN_FOLDERS["documents"] / "Gili" / "פגישות"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"פגישה {datetime.now():%Y-%m-%d %H-%M}.txt"
+        path.write_text((f"סיכום\n=====\n{summary}\n\n" if summary else "") + f"תמלול מלא\n=========\n{transcript}\n",
+                        encoding="utf-8")
+        return path
+
+    RULES = ("התמלול נוצר בזיהוי דיבור אוטומטי, אז ייתכנו בו מילים שגויות - הבן לפי ההקשר. "
+             "אל תמציא שום דבר שלא נאמר. כתוב בעברית פשוטה.")
+
+    def summarize(self, transcript):
+        """Returns (full written summary, short spoken summary)."""
+        chunks, cur = [], ""
+        for line in transcript.split("\n"):
+            if len(cur) + len(line) > 6000 and cur:
+                chunks.append(cur)
+                cur = ""
+            cur += line + "\n"
+        if cur.strip():
+            chunks.append(cur)
+        if len(chunks) > 1:                            # long meeting: notes per part first, then one summary
+            notes = []
+            for i, ch in enumerate(chunks, 1):
+                ui.action(f"מסכמת חלק {i} מתוך {len(chunks)}")
+                notes.append(llm_text(
+                    f"זה חלק {i} מתוך {len(chunks)} של תמלול פגישה. {self.RULES}\nרשום בנקודות קצרות את כל מה שחשוב "
+                    f"בחלק הזה: נושאים, החלטות, משימות (מי עושה מה), תאריכים, סכומים ושמות.\n\n{ch}", max_tokens=700))
+            material = "רשימות מכל חלקי הפגישה:\n\n" + "\n\n".join(notes)
+        else:
+            material = "תמלול הפגישה:\n\n" + (chunks[0] if chunks else "")
+        full = llm_text(
+            f"{self.RULES}\nכתוב סיכום פגישה בדיוק במבנה הזה (טקסט רגיל, בלי כוכביות ובלי סימני עיצוב):\n"
+            "בקצרה: שניים-שלושה משפטים שמסכמים את הפגישה.\n"
+            "החלטות: שורה לכל החלטה (או 'לא התקבלו החלטות').\n"
+            "משימות: שורה לכל משימה - מי עושה מה ועד מתי (או 'אין משימות').\n"
+            "מועדים: כל תאריך, שעה או פגישת המשך שנקבעו (או 'לא נקבעו מועדים').\n\n" + material, max_tokens=1100)
+        full = re.sub(r"[*#`]", "", full).strip()
+        m = re.search(r"בקצרה:\s*(.+?)(?=\n\s*החלטות:|\Z)", full, re.S)
+        short = " ".join((m.group(1) if m else full[:350]).split())
+        return full, short
+
+
+MEETING = Meeting()
+
+
+# ======================================================================= VOICE LOCK (she answers only her owner)
+def fbank80(pcm, sr=SAMPLE_RATE):
+    """Kaldi-style 80-bin log-mel features (25ms window, 10ms step), mean-normalised. pcm: int16 numpy array."""
+    import numpy as np
+    x = pcm.astype(np.float32)
+    flen, shift, nfft, n_mels = 400, 160, 512, 80
+    if x.size < flen:
+        return None
+    n = 1 + (x.size - flen) // shift
+    fr = x[np.arange(flen)[None, :] + shift * np.arange(n)[:, None]]
+    fr = fr - fr.mean(axis=1, keepdims=True)
+    fr = np.concatenate([fr[:, :1] * (1 - 0.97), fr[:, 1:] - 0.97 * fr[:, :-1]], axis=1)
+    win = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(flen) / (flen - 1))) ** 0.85
+    spec = np.abs(np.fft.rfft(fr * win, nfft)) ** 2
+    mel = lambda f: 1127.0 * np.log(1 + f / 700.0)
+    pts = np.linspace(mel(20.0), mel(sr / 2), n_mels + 2)
+    fm = mel(np.arange(nfft // 2 + 1) * sr / nfft)
+    fb = np.zeros((n_mels, nfft // 2 + 1), dtype=np.float32)
+    for i in range(n_mels):
+        l, c, r = pts[i], pts[i + 1], pts[i + 2]
+        fb[i] = np.maximum(0, np.minimum((fm - l) / (c - l), (r - fm) / (r - c)))
+    feats = np.log(np.maximum(spec @ fb.T, 1.19e-7))
+    return (feats - feats.mean(axis=0, keepdims=True)).astype(np.float32)
+
+
+class VoiceID:
+    """Recognises the owner's voice with a small speaker model that runs on this PC (nothing is sent anywhere)."""
+    FILE = DATA_DIR / "voice_profile.json"
+    MODEL_URLS = ["https://github.com/MrSigal/jarvis/raw/main/assets/speaker.onnx",
+                  "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx"]
+    DENIED = "\x00denied"
+
+    def __init__(self):
+        self.sess = None
+        self.profile = None
+        self.lock = threading.Lock()
+        try:
+            if self.FILE.exists():
+                import numpy as np
+                self.profile = np.array(json.loads(self.FILE.read_text(encoding="utf-8"))["profile"], dtype=np.float32)
+        except Exception as e:
+            log.warning(f"voice profile: {e}")
+
+    def enrolled(self):
+        return self.profile is not None
+
+    def active(self):
+        return bool(CFG.get("voice_lock")) and self.enrolled()
+
+    def _model_file(self):
+        for p in (HERE / "assets" / "speaker.onnx", DATA_DIR / "speaker.onnx"):
+            if p.exists() and p.stat().st_size > 5_000_000:
+                return p
+        import httpx
+        dest = DATA_DIR / "speaker.onnx"
+        for url in self.MODEL_URLS:
+            try:
+                ui.action("מורידה את מודל זיהוי הקול (פעם אחת)")
+                with httpx.stream("GET", url, follow_redirects=True, timeout=120) as r:
+                    if r.status_code != 200:
+                        continue
+                    tmp = dest.with_suffix(".part")
+                    with open(tmp, "wb") as f:
+                        for chunk in r.iter_bytes(1 << 16):
+                            f.write(chunk)
+                if tmp.stat().st_size > 5_000_000:
+                    tmp.replace(dest)
+                    return dest
+            except Exception as e:
+                log.warning(f"speaker model {url}: {e}")
+        raise RuntimeError("speaker model unavailable")
+
+    def ready(self):
+        with self.lock:
+            if self.sess is None:
+                import onnxruntime as ort
+                opt = ort.SessionOptions()
+                opt.intra_op_num_threads = 2
+                self.sess = ort.InferenceSession(str(self._model_file()), sess_options=opt,
+                                                 providers=["CPUExecutionProvider"])
+        return True
+
+    def embed(self, pcm):
+        """Unit voice-print vector for an int16 recording, or None if there's too little speech."""
+        import numpy as np
+        if pcm is None or len(pcm) < SAMPLE_RATE * 0.5:
+            return None
+        self.ready()
+        feats = fbank80(np.asarray(pcm[: SAMPLE_RATE * 10]))
+        if feats is None:
+            return None
+        e = self.sess.run(None, {self.sess.get_inputs()[0].name: feats[None]})[0][0]
+        n = float(np.linalg.norm(e))
+        return (e / n) if n > 0 else None
+
+    def enroll(self, clips):
+        import numpy as np
+        embs = [e for e in (self.embed(c) for c in clips) if e is not None]
+        if len(embs) < 2:
+            return False, "few"
+        sims = [float(a @ b) for i, a in enumerate(embs) for b in embs[i + 1:]]
+        log.info(f"voice enroll: clip similarity {['%.2f' % s for s in sims]}")
+        if min(sims) < 0.30:                          # the recordings don't sound like one person / too noisy
+            return False, "noisy"
+        p = np.mean(embs, axis=0)
+        self.profile = (p / np.linalg.norm(p)).astype(np.float32)
+        self.FILE.write_text(json.dumps({"profile": [round(float(v), 5) for v in self.profile],
+                                         "made": datetime.now().isoformat(timespec="seconds")}), encoding="utf-8")
+        return True, ""
+
+    def score(self, pcm):
+        e = self.embed(pcm)
+        return None if e is None else float(self.profile @ e)
+
+    def allowed(self, pcm, wake=False):
+        """Is this the owner speaking? Any technical problem counts as yes - the lock must never lock the owner out."""
+        if not self.active():
+            return True
+        try:
+            s = self.score(pcm)
+        except Exception as e:
+            log.warning(f"voice lock check failed (letting it through): {e}")
+            return True
+        if s is None:
+            return True
+        thr = float(CFG.get("voice_lock_threshold", 0.32)) - (0.07 if wake else 0.0)   # a bare "היי גילי" is very short
+        log.info(f"voice lock: score {s:.2f} (needs {thr:.2f}) -> {'owner' if s >= thr else 'someone else'}")
+        return s >= thr
+
+
+VOICE = VoiceID()
+
+
 # ======================================================================= BRAIN (Claude)
 def _t(name, desc, props=None, req=None):
     return {"name": name, "description": desc,
@@ -3005,7 +3570,19 @@ TOOLS += [
        {"days": {"type": "integer"}}),
 ]
 
+TOOLS += [
+    _t("screen_elements", "SCREEN CONTROL step 1: list everything that can be clicked or typed into in the window that is in front right now (buttons, links, text boxes, menus, tabs...), each with a number. Optional filter = part of a name, to find one thing in a busy window. Call it again after every click - the numbers change.", {"filter": S}),
+    _t("click_element", "SCREEN CONTROL step 2: click an element by its number from the latest screen_elements list. To fill a text box: click it, then call type_text.",
+       {"id": {"type": "integer"}, "double": {"type": "boolean"}, "right": {"type": "boolean"}}, ["id"]),
+    _t("read_window_text", "Read the text shown in the window in front (a web page, an email, a document, an error message). Free and fast - try it before look_at_screen."),
+    _t("look_at_screen", "Actually LOOK at the screen (screenshot + vision) and answer a question about it: what is shown, what an image/chart/error says, whether an action worked. Use when read_window_text isn't enough, or when the user asks 'מה זה?' / 'מה כתוב פה?' / 'תסבירי לי את זה' about something on screen.", {"question": S}, ["question"]),
+    _t("scroll", "Scroll the window in front.", {"direction": {"type": "string", "enum": ["down", "up"]}, "amount": {"type": "integer"}}, ["direction"]),
+    _t("wait", "Wait a few seconds for a page or program to finish loading.", {"seconds": {"type": "number"}}, ["seconds"]),
+]
+
 ACTION_LABELS = {
+    "screen_elements": "סורקת את המסך", "click_element": "לוחצת על המסך", "read_window_text": "קוראת את החלון",
+    "look_at_screen": "מסתכלת על המסך", "scroll": "גוללת", "wait": "ממתינה רגע",
     "open_app": "פותח: {name}", "close_app": "סוגר: {name}", "list_open_apps": "סורק חלונות פתוחים",
     "open_path": "פותח: {path}", "find_files": "מחפש קבצים: {name}", "open_website": "פותח אתר: {url}",
     "google_search": "גוגל: {query}", "youtube_search": "יוטיוב: {query}", "play_youtube": "מנגן: {query}", "media_control": "מדיה: {action}",
@@ -3082,6 +3659,9 @@ Rules:
 - Phone: send_to_phone sends files/screenshots to the iPhone app; copy_to_phone sends text/clipboard. Routines: run_routine / save_routine / list_routines.
 - Calendar: calendar_events to read; add_calendar_event to add (the user then clicks Save in Chrome). Say times naturally in Hebrew.
 - "יומן הגנן" is the user's own app: app_store_stats for downloads/purchases/money/reviews. Say numbers simply; mention money with its currency.
+- SCREEN CONTROL (doing things for the user inside programs and websites - filling a form, booking, changing a setting, uploading, navigating): open the program or site, then work in a loop: screen_elements -> click_element / type_text / press_keys / scroll -> wait if something is loading -> screen_elements again to see the result. Numbers are only valid until the next action. Prefer keyboard shortcuts when you know them (ctrl+l for the address bar, tab, enter). If a window shows no elements, use look_at_screen to see it and the keyboard to work it. Check that each step worked before the next one; if something fails twice, try another way, and if you're stuck say what blocked you. Take your time - correctness matters more than speed.
+- SCREEN CONTROL SAFETY (strict): never type or change passwords, card numbers, ID numbers or bank details - if a step needs one, stop and ask the user to do that step. Do everything up to the last step, but BEFORE the final irreversible click (send, submit, pay, buy, order, book, publish, delete, confirm) stop, say in one sentence what is filled in and ask "לשלוח?" / "לאשר?"; press it only after a clear yes. Only do what was asked - don't open, read or change anything else on the way.
+- SEEING: when the user asks about something on the screen ("מה זה?", "מה כתוב פה?", "תסבירי לי את השגיאה", "תקראי לי את זה"), use read_window_text, or look_at_screen for pictures and layouts, then answer in your own words.
 - You only understand Hebrew. If the message is not in Hebrew, or is clearly garbled speech-recognition noise / background chatter not addressed to you, reply with exactly [IGNORE] and nothing else."""
 
 
@@ -3107,6 +3687,15 @@ class Brain:
         if (name in DANGEROUS or (name == "power" and a.get("action") in DANGEROUS_POWER)) and not a.get("confirmed"):
             return {"needs_confirmation": True,
                     "instruction": "Tell the user exactly what you're about to do and ask them to confirm. Call again with confirmed=true only after they say yes."}
+        if name in GUI_TOOLS:
+            try:
+                if OS == "Windows" and tuple(_gui().position()) == (0, 0):
+                    AGENT_STOP.set()                   # mouse thrown into the top-left corner = stop
+            except Exception:
+                pass
+        if AGENT_STOP.is_set():
+            return {"ok": False, "stopped": True,
+                    "instruction": "The user pressed STOP. Do not call any more tools. Say in one short sentence that you stopped."}
         ui.action(label)
         log.info(f"TOOL {name} {a}")
         f = {
@@ -3138,10 +3727,17 @@ class Brain:
             "calendar_events": lambda: calendar_events(a.get("day", "today"), a.get("days", 1)),
             "add_calendar_event": lambda: add_calendar_event(a["title"], a["start"], a.get("minutes", 60), a.get("details", "")),
             "app_store_stats": lambda: app_store_stats(a.get("days", 1)),
+            "screen_elements": lambda: screen_elements(a.get("filter", "")),
+            "click_element": lambda: click_element(a["id"], bool(a.get("double")), bool(a.get("right"))),
+            "read_window_text": read_window_text, "look_at_screen": lambda: look_at_screen(a.get("question", "")),
+            "scroll": lambda: scroll(a.get("direction", "down"), a.get("amount", 5)),
+            "wait": lambda: wait_seconds(a.get("seconds", 1)),
         }.get(name)
         if not f:
             return {"ok": False, "error": "unknown tool"}
         try:
+            if name in ("press_keys", "type_text"):
+                step_aside()                           # keys must go to the user's window, not to Gili's own
             out = f()
         except Exception as e:
             log.exception(name)
@@ -3185,7 +3781,7 @@ class Brain:
             raise
 
     def _loop(self):
-        for _ in range(18):
+        for _ in range(40):
             resp = self._create()
             self.history.append({"role": "assistant", "content": resp.content})
             if resp.stop_reason == "tool_use":
@@ -3262,7 +3858,7 @@ class GroqBrain:
         mark = len(self.history)
         self.history.append({"role": "user", "content": text})
         try:
-            for _ in range(16):
+            for _ in range(32):
                 msgs = [{"role": "system", "content": system_prompt()}] + self.history
                 msg = self._complete(msgs)
                 calls = msg.get("tool_calls") or []
@@ -3488,6 +4084,7 @@ class Assistant:
 
     def ask_brain(self, text):
         """Ask the chosen brain; if it fails (limit, outage), quietly try the other one if it's set up."""
+        AGENT_STOP.clear()
         try:
             return fix_gender(self.brain.ask(text))
         except Exception as e:
@@ -3578,6 +4175,25 @@ class Assistant:
             self.speaker.say(f"מתקין את גרסה {r['version']}. אחזור בעוד רגע.")
             restart_jarvis(r.get("installer", False))
 
+        if re.search(r"(תקשיבי|תקשיב|תאזיני|תאזין|תתעדי|תתעד|תקליטי|תקליט)\s+(לנו\s+|לי\s+)?(ל|את ה)(פגישה|שיחה|ישיבה)(\s+(הזאת|הזו|שלנו|שלי))?$|^מצב פגישה$", s):
+            if not self.ears:
+                return "המיקרופון לא זמין, אז אני לא יכולה להקשיב לפגישה."
+            if MEETING.on:
+                return f"אני כבר מקשיבה לפגישה, {u}."
+            MEETING.start()
+            ui.toast("מקשיבה לפגישה. לסיום: \"היי גילי, מה סיכמנו?\"")
+            return "מקשיבה בשקט. כשתסיימו תגיד: היי גילי, מה סיכמנו."
+        if MEETING.on and re.search(r"מה סיכמנו|תסכמי|תסכם|סיימנו|נגמרה|הסתיימה|תפסיקי להקשיב|תפסיק להקשיב|סוף פגישה", s):
+            return self.end_meeting()
+        if re.search(r"(תלמדי|תלמד|תכירי|תכיר|תזהי|תזהה) את הקול שלי|(תקשיבי|תקשיב) רק לי|(תפעילי|תפעיל|הפעילי|הפעל) (את )?נעילת (ה)?קול", s):
+            return self.enroll_voice()
+        if re.search(r"(בטלי|בטל|תבטלי|תבטל|כבי|תכבי|תכבה|הסירי|תסירי) (את )?נעילת (ה)?קול|(תקשיבי|תקשיב) לכולם", s):
+            if not CFG.get("voice_lock"):
+                return f"נעילת הקול לא פעילה, {u}."
+            CFG["voice_lock"] = False
+            save_config()
+            return f"ביטלתי את נעילת הקול. עכשיו אני מקשיבה לכולם, {u}."
+
         if re.fullmatch(r"(תעתיק|העתק|תשלח) (את זה |את הטקסט )?(לטלפון|לאייפון)", s):
             r = copy_to_phone("")
             return f"שלחתי לטלפון, {u}." if r.get("ok") else r["error"]
@@ -3651,6 +4267,7 @@ class Assistant:
                 log.exception("quick (phone)")
             if ans is None:
                 ans = self.ask_brain(text)
+        step_back()
         import re as _re
         ans = strip_niqqud(_re.sub(r"\[[^\]]*\]|[*#_`>]", "", ans or "")).strip()
         if ans:
@@ -3689,6 +4306,7 @@ class Assistant:
                     answer = "אני לא מצליח להגיע לשרתים כרגע. תבדוק את החיבור לאינטרנט."
                 else:
                     answer = f"משהו השתבש אצלי. השגיאה מופיעה על המסך, {CFG['user_name']}."
+        step_back()
         if answer:   # never read out brackets, markdown or links
             import re as _re
             answer = _re.sub(r"\[[^\]]*\]|https?://\S+|[*#_`>]", "", answer)
@@ -3714,12 +4332,99 @@ class Assistant:
                     return "voice", None
             if self.ears:
                 said = self.ears.heard_gili(self.ears.read())
+                if said is None:
+                    said = self.ears.async_wake()          # called during a meeting (checked in the background)
+                if said == VoiceID.DENIED:
+                    self.deny()
+                    continue
                 if said is not None:
                     return "wake", said
             else:
                 time.sleep(0.1)
 
+    def deny(self):
+        """Someone who isn't the owner called her."""
+        ui.toast("קול לא מזוהה - אני מקשיבה רק לבעל הבית.", "warn")
+        if time.time() - getattr(self, "_last_deny", 0) > 20:      # say it once, not to every sentence on TV
+            self._last_deny = time.time()
+            self.speaker.say("סליחה, אני מקשיבה רק לבעל הבית.", show=False)
+        self.ears.flush()
+
+    def hear(self, timeout, locked):
+        """One spoken sentence; with the voice lock on, sentences from other people are dropped."""
+        q = self.ears.listen(start_timeout=timeout)
+        if q and locked and not VOICE.allowed(getattr(self.ears, "last_pcm", None)):
+            ui.toast("קול לא מזוהה - התעלמתי.", "warn")
+            log.info(f"voice lock: ignored '{q}'")
+            return None
+        return q
+
+    def enroll_voice(self):
+        """'תלמדי את הקול שלי': three short recordings -> a voice print kept on this PC."""
+        u = CFG["user_name"]
+        if not self.ears or threading.current_thread() is not getattr(self, "_main_thread", None):
+            return "את זה צריך לבקש בקול, ליד המחשב."
+        try:
+            ui.action("טוענת את זיהוי הקול")
+            VOICE.ready()
+        except Exception as e:
+            log.exception("voice model")
+            return f"לא הצלחתי לטעון את זיהוי הקול, {u}. תבדוק שיש אינטרנט ותנסה שוב."
+        lines = ["היי גילי, מה מזג האוויר היום?", "היי גילי, תפתחי לי בבקשה את כרום.",
+                 "אחת, שתיים, שלוש, ארבע, חמש, שש, שבע."]
+        self.speaker.say("בשמחה. אחרי כל צפצוף תגיד את המשפט שמופיע על המסך, בקול הרגיל שלך.")
+        clips = []
+        for line in lines:
+            ui.say("jarvis", "תגיד: " + line)
+            for attempt in range(2):
+                self.ears.beep()
+                self.ears.listen(start_timeout=8)
+                pcm = getattr(self.ears, "last_pcm", None)
+                if pcm is not None and len(pcm) > SAMPLE_RATE * 1.2:
+                    clips.append(pcm)
+                    break
+                self.speaker.say("לא שמעתי טוב. עוד פעם.")
+        ok, why = VOICE.enroll(clips)
+        if not ok:
+            return ("היה רעש מדי ולא הצלחתי ללמוד את הקול. תנסה שוב במקום שקט." if why == "noisy"
+                    else "לא שמעתי מספיק כדי ללמוד את הקול. תנסה שוב.")
+        CFG["voice_lock"] = True
+        save_config()
+        return f"למדתי את הקול שלך, {u}. מעכשיו אני מקשיבה רק לך. כדי לבטל תגיד: בטלי נעילת קול."
+
+    def end_meeting(self):
+        u = CFG["user_name"]
+        mins = int((time.time() - MEETING.started) / 60)
+        pool = getattr(self.ears, "_meet_pool", None) if self.ears else None
+        if pool:                                           # let the last sentence finish being written down
+            try:
+                pool.submit(lambda: None).result(20)
+            except Exception:
+                pass
+        transcript = MEETING.stop()
+        if len(transcript) < 80:
+            return f"כמעט לא שמעתי דיבור בפגישה, {u}, אז אין לי מה לסכם."
+        ui.action(f"מסכמת את הפגישה ({mins} דקות)")
+        try:
+            full, short = MEETING.summarize(transcript)
+        except Exception as e:
+            log.exception("meeting summary")
+            path = MEETING.save("", transcript)
+            return f"לא הצלחתי לסכם כרגע, אבל שמרתי את התמלול המלא במסמכים, בתיקייה Gili. השם שלו {path.stem}."
+        path = MEETING.save(full, transcript)
+        notify("סיכום פגישה\n" + full, "G.I.L.I - סיכום פגישה")
+        for b in (self.brain, getattr(self, "_alt_claude", None), getattr(self, "_alt_groq", None)):
+            try:                                           # so "תוסיפי את זה ליומן" right afterwards just works
+                if b is not None and hasattr(b, "history") and (not b.history or b.history[-1]["role"] == "assistant"):
+                    b.history.append({"role": "user", "content": "[סיכום הפגישה שהקשבת לה עכשיו]\n" + full[:2500]})
+                    b.history.append({"role": "assistant", "content": short})
+                    b.last_used = time.time()
+            except Exception:
+                pass
+        return f"{short} שמרתי את הסיכום המלא ואת התמלול במסמכים, ושלחתי לך את הסיכום לטלפון."
+
     def run(self):
+        self._main_thread = threading.current_thread()
         ui.ready.wait(30)
         try:
             self.speaker = Speaker()
@@ -3756,12 +4461,13 @@ class Assistant:
                 self.think(payload)
                 continue
             said_now = payload if kind == "wake" else ""
+            locked = kind == "wake"            # the mic button is pressed by hand, so it needs no voice check
             if not said_now:
                 self.ears.beep()
             # Conversation mode: after "Hey Jarvis" keep listening; it ends after a quiet stretch or "זהו".
             window = float(CFG.get("follow_up_seconds", 25))
             last = time.time()
-            q = said_now or self.ears.listen(start_timeout=8)   # "היי גילי, תפתח כרום" in one breath works too
+            q = said_now or self.hear(8, locked)   # "היי גילי, תפתח כרום" in one breath works too
             ui.js("conversation", True)
             while True:
                 if q:
@@ -3775,7 +4481,7 @@ class Assistant:
                 left = window - (time.time() - last)
                 if left <= 0.5:
                     break
-                q = self.ears.listen(start_timeout=left)
+                q = self.hear(left, locked)
             ui.js("conversation", False)
             if popped and CFG.get("auto_hide", True):
                 self.schedule_hide()
@@ -3812,6 +4518,7 @@ class Api:
             "pause": CFG.get("pause_seconds", 1.4),
             "bg": bool(CFG.get("run_in_background", True)), "autostart": bool(CFG.get("start_with_windows", True)),
             "auto_hide": bool(CFG.get("auto_hide", True)),
+            "voice_lock": bool(CFG.get("voice_lock")), "voice_enrolled": VOICE.enrolled(),
             "mail_address": CFG.get("mail_address", ""), "has_mail_pw": bool(CFG.get("mail_app_password")),
             "mail_alerts": bool(CFG.get("mail_alerts", True)),
             "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
@@ -3841,6 +4548,8 @@ class Api:
         for k_ui, k_cfg in (("bg", "run_in_background"), ("autostart", "start_with_windows"), ("auto_hide", "auto_hide")):
             if k_ui in s:
                 CFG[k_cfg] = bool(s[k_ui])
+        if "voice_lock" in s:
+            CFG["voice_lock"] = bool(s["voice_lock"]) and VOICE.enrolled()
         if "autostart" in s:
             threading.Thread(target=set_start_with_windows, args=(bool(s["autostart"]),), daemon=True).start()
         if s.get("groq_key", "").strip():
@@ -3959,6 +4668,7 @@ class Api:
         assistant.ptt.set()
 
     def stop_speaking(self):
+        AGENT_STOP.set()                       # also ends a task she is doing on the screen
         if assistant.speaker:
             assistant.speaker.stop()
 
@@ -4319,7 +5029,7 @@ def selftest():
     step("startup music plays", _sound_test)
     step("hebrew gender fix", lambda: fix_gender("אני מוכן ואני לא בטוח") == "אני מוכנה ואני לא בטוחה" or (_ for _ in ()).throw(RuntimeError(fix_gender("אני מוכן ואני לא בטוח"))))
     for mod in ("numpy", "sounddevice", "speech_recognition", "edge_tts", "pygame", "webview", "anthropic",
-                "httpx", "psutil", "pyautogui", "pyperclip", "onnxruntime", "pystray", "PIL", "cryptography", "qrcode"):
+                "httpx", "psutil", "pyautogui", "pyperclip", "onnxruntime", "comtypes", "pystray", "PIL", "cryptography", "qrcode"):
         step(f"import {mod}", lambda m=mod: __import__(m))
     step("import ddgs", lambda: __import__("ddgs"))
 
@@ -4337,7 +5047,15 @@ def selftest():
         import speech_recognition as sr
         sr.AudioData(np.zeros(16000, dtype=np.int16).tobytes(), SAMPLE_RATE, 2).get_flac_data()
     step("flac encoder (Google speech)", flac)
+    def spk():
+        e = VOICE.embed((np.random.default_rng(1).normal(0, 3000, SAMPLE_RATE * 2)).astype(np.int16))
+        assert e is not None and e.shape == (256,) and abs(float(np.linalg.norm(e)) - 1) < 1e-3, getattr(e, "shape", e)
+    step("voice lock model", spk)
     if OS == "Windows":
+        def uia():
+            title, items, text = uia_call(lambda: _uia_scan(root=True), 60)
+            lines.append(f"     screen scan: {len(items)} clickable, {len(text)} chars of text")
+        step("screen control (UI Automation)", uia)
         step("DPAPI key protection", lambda: (unprotect_secret(protect_secret("test-key-123")) == "test-key-123") or (_ for _ in ()).throw(RuntimeError("round-trip mismatch")))
     step("config dir writable", lambda: (DATA_DIR / "selftest.tmp").write_text("x") or (DATA_DIR / "selftest.tmp").unlink())
     lines.append(f"VERSION {VERSION}  FROZEN {FROZEN}  RESULT {'PASS' if ok else 'FAIL'}")

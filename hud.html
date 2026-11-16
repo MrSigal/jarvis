@@ -476,6 +476,8 @@ body::after{opacity:.35}
       <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="sBg" style="width:auto;height:auto"> כשסוגרים את החלון, גילי ממשיך להקשיב ברקע (אייקון ליד השעון)</label>
       <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="sAuto" style="width:auto;height:auto"> להפעיל את גילי ברקע כשהמחשב נדלק</label>
       <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="sHide" style="width:auto;height:auto"> כשאומרים "היי גילי" החלון קופץ, ונעלם שוב כשסיימתי</label>
+      <label style="display:flex;gap:8px;align-items:center;font-family:Heebo,sans-serif;letter-spacing:0;font-weight:400;color:var(--text);font-size:14px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="sVLock" style="width:auto;height:auto"> נעילת קול: להקשיב רק לקול שלי</label>
+      <div class="help" id="sVLockHelp">כדי שגילי תכיר את הקול שלך, תגיד לה: "היי גילי, <b>תלמדי את הקול שלי</b>". לביטול: "בטלי נעילת קול". הקלדה והאפליקציה באייפון עובדות תמיד.</div>
     </div>
 
     <div class="row">
@@ -616,7 +618,7 @@ function openSettings(cfg){
   $('#sMailPw').value = ''; $('#sMailPw').placeholder = cfg.has_mail_pw ? 'שמורה (השאר ריק כדי לא לשנות)' : 'סיסמת אפליקציה';
   $('#sMailAlerts').checked = cfg.mail_alerts !== false; $('#mailMsg').textContent = '';
   $('#sPause').value = cfg.pause || 1.4; $('#pauseVal').textContent = cfg.pause || 1.4;
-  $('#sBg').checked = cfg.bg !== false; $('#sAuto').checked = cfg.autostart !== false; $('#sHide').checked = cfg.auto_hide !== false;
+  $('#sBg').checked = cfg.bg !== false; $('#sAuto').checked = cfg.autostart !== false; $('#sHide').checked = cfg.auto_hide !== false; $('#sVLock').checked = !!cfg.voice_lock; $('#sVLock').disabled = !cfg.voice_enrolled;
   $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'שמור ' + cfg.claude_mask + ' (השאר ריק כדי לא לשנות)' : 'sk-ant-…';
   if (cfg.voice) $('#sVoice').value = cfg.voice;
   $('#sEngine').value = cfg.tts_engine || 'edge'; window.__cfg = cfg;
@@ -715,7 +717,7 @@ async function save(quiet){
   const r = await api().save_settings({
     claude_key: $('#sClaude').value, voice: $('#sVoice').value,
     mail_address: $('#sMail').value, mail_pw: $('#sMailPw').value, mail_alerts: $('#sMailAlerts').checked,
-    pause: $('#sPause').value, bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked,
+    pause: $('#sPause').value, bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked, voice_lock: $('#sVLock').checked,
     brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
     el_key: $('#sElKey').value, el_voice_id: $('#sElVoice').value, el_mood: $('#sElMood').value,

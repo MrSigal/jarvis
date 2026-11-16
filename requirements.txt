@@ -11,6 +11,8 @@ pygame
 psutil
 pyautogui
 pyperclip
+uiautomation
+comtypes
 ddgs
 pystray
 Pillow
