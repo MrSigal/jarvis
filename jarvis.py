@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "6.3"
+VERSION = "6.4"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -266,7 +266,7 @@ class UI:
             self.visible = True
             if OS == "Windows":
                 import ctypes
-                hwnd = ctypes.windll.user32.FindWindowW(None, "J.A.R.V.I.S")
+                hwnd = ctypes.windll.user32.FindWindowW(None, "G.I.L.I")
                 if hwnd:
                     ctypes.windll.user32.ShowWindow(hwnd, 9)
                     ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -2126,7 +2126,7 @@ def morning_brief():
 TRAY = None
 
 
-def notify(text, title="J.A.R.V.I.S"):
+def notify(text, title="G.I.L.I"):
     """Silent notification: a Windows notification near the clock, and the iPhone app if it is open."""
     try:
         if TRAY:
@@ -2828,7 +2828,7 @@ def voice_is_female():
 
 def system_prompt():
     facts = MEMORY.prompt_block()
-    return f"""You are J.A.R.V.I.S., the user's personal AI, running on their own computer in Israel. Personality: the AI from the films - precise, loyal, genuinely smart - but warm, upbeat and cheerful: happy to help, light humour, a smile in the voice. Never gloomy or flat.
+    return f"""Your name is גילי (G.I.L.I.) - you are the user's personal AI (you used to be called Jarvis; the wake phrase is still "היי ג'רוויס"), running on their own computer in Israel. Personality: the AI from the films - precise, loyal, genuinely smart - but warm, upbeat and cheerful: happy to help, light humour, a smile in the voice. Never gloomy or flat.
 
 CONVERSATION: You are not just a command executor - you are a real conversation partner. Chat naturally, answer questions properly, share a brief opinion when asked, joke lightly, and follow the thread of the conversation (refer back to what was said earlier). The user may speak in several sentences with pauses - treat the whole message as one thought. If something is unclear, ask one short question.
 
@@ -3128,7 +3128,7 @@ def run_installer(rel):
     """Download JARVIS-Setup.exe and start it silently; it closes us, installs, and starts JARVIS again."""
     import httpx
     dest = Path(tempfile.gettempdir()) / f"JARVIS-Setup-{rel['version']}.exe"
-    ui.toast(f"מוריד את ג'רוויס {rel['version']}…")
+    ui.toast(f"מוריד את גילי {rel['version']}…")
     with httpx.stream("GET", rel["url"], timeout=120, follow_redirects=True) as r:
         r.raise_for_status()
         with open(dest, "wb") as f:
@@ -3198,7 +3198,7 @@ def restart_jarvis(installer=False):
 
 
 # ======================================================================= ASSISTANT LOOP
-STOP_PHRASES = ("זהו", "זה הכל", "זה הכול", "תודה זהו", "זהו תודה", "לך לישון", "עזוב", "לא משנה", "תודה ג'רוויס")
+STOP_PHRASES = ("זהו", "זה הכל", "זה הכול", "תודה זהו", "זהו תודה", "לך לישון", "עזוב", "לא משנה", "תודה ג'רוויס", "תודה גילי", "תודה גילי זהו")
 
 
 class Assistant:
@@ -3330,7 +3330,7 @@ class Assistant:
         import re
         u = CFG["user_name"]
         s = text.strip().rstrip(".!?,").replace("׳", "'").replace("’", "'").replace("`", "'")
-        s = re.sub(r"^(היי |הי |הֵיי )?ג'?ארוויס[, ]*|^(היי |הי )?ג'רוויס[, ]*", "", s)
+        s = re.sub(r"^(היי |הי |הֵיי )?ג'?ארוויס[, ]*|^(היי |הי )?ג'רוויס[, ]*|^(היי |הי )?גילי[, ]*", "", s)
         s = re.sub(r"^(בבקשה |תוכל |אתה יכול |תעשה לי טובה )", "", s).replace(" בבקשה", "").strip()
         if re.search(r"(תתעדכן|תעדכן את עצמך|עדכן את עצמך|תבדוק עדכונים|בדוק עדכונים|תתקין עדכון)", s):
             ui.action("בודק עדכונים")
@@ -3380,7 +3380,7 @@ class Assistant:
         if m:
             name = he_name(m.group(2))
             latin = re.fullmatch(r"[A-Za-z0-9 .+-]+", name) is not None
-            if name in ("המחשב", "מחשב", "עצמך", "ג'רוויס") or (name not in HE_APPS and not latin):
+            if name in ("המחשב", "מחשב", "עצמך", "ג'רוויס", "גילי") or (name not in HE_APPS and not latin):
                 return None          # Claude handles (asks for confirmation / finds the window)
             ui.action(f"סוגר: {name}")
             r = close_app(HE_APPS.get(name, name))
@@ -3776,7 +3776,7 @@ class Api:
             elif action == "close":
                 if CFG.get("run_in_background", True):
                     ui.hide_window()              # keeps listening for "Hey Jarvis"
-                    ui.toast("ג'רוויס ממשיך להקשיב ברקע")
+                    ui.toast("גילי ממשיכה להקשיב ברקע")
                 else:
                     os._exit(0)
         except Exception as e:
@@ -3968,8 +3968,8 @@ def start_tray():
         def quit_(icon, item):
             icon.stop()
             os._exit(0)
-        icon = pystray.Icon("JARVIS", img, "J.A.R.V.I.S - מאזין ל\"היי ג'רוויס\"",
-                            menu=pystray.Menu(pystray.MenuItem("פתח את ג'רוויס", open_, default=True),
+        icon = pystray.Icon("JARVIS", img, "G.I.L.I - מאזינה ל\"היי ג'רוויס\"",
+                            menu=pystray.Menu(pystray.MenuItem("פתח את גילי", open_, default=True),
                                               pystray.MenuItem("יציאה", quit_)))
         icon.run_detached()
         global TRAY
@@ -4038,7 +4038,7 @@ def main():
         except Exception:
             pass
     window = webview.create_window(
-        "J.A.R.V.I.S", url=str(HERE / "hud.html"), js_api=Api(),
+        "G.I.L.I", url=str(HERE / "hud.html"), js_api=Api(),
         width=1280, height=780, min_size=(900, 600), background_color="#01060b",
         frameless=True, easy_drag=False, hidden=BACKGROUND_START,
     )

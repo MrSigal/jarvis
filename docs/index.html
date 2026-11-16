@@ -6,11 +6,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="JARVIS">
+<meta name="apple-mobile-web-app-title" content="GILI">
 <meta name="theme-color" content="#01060b">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>J.A.R.V.I.S</title>
+<title>G.I.L.I</title>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Heebo:wght@300;400;500;700&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#01060b;--c:#3fd9ff;--c2:#a6f1ff;--cdim:rgba(63,217,255,.22);--cfaint:rgba(63,217,255,.08);--amber:#ffb23f;--red:#ff4f5e;--green:#4dffb0;--text:#cdeffb;--muted:#5d8797}
@@ -102,12 +102,12 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
   <div class="rings">
     <span style="width:100%;height:100%"></span><span style="width:84%;height:84%"></span>
     <span style="width:66%;height:66%"></span><span style="width:46%;height:46%"></span>
-    <b>J.A.R.V.I.S</b>
+    <b>G.I.L.I</b>
   </div>
   <div class="tapmsg">הקש כדי להפעיל</div>
 </div>
 <header>
-  <div class="logo">J.A.R.V.I.S</div>
+  <div class="logo">G.I.L.I</div>
   <div class="status" id="status"><i></i><span id="statusTxt">מתחבר…</span></div>
   <div style="display:flex;gap:8px">
     <button class="iconbtn" id="ctlBtn" title="שליטה במחשב">🎛</button>
@@ -142,16 +142,16 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
 </div>
 <form id="form" autocomplete="off">
   <button class="round" type="button" id="mic" title="דבר"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
-  <input id="inp" placeholder="דבר או כתוב לג'רוויס…" enterkeyhint="send">
+  <input id="inp" placeholder="דבר או כתוב לגילי…" enterkeyhint="send">
   <button class="round" type="submit" title="שלח"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12H4M10 6l-6 6 6 6"/></svg></button>
 </form>
 
 <div id="viewer"><button class="x" id="viewerX">✕</button><img id="viewerImg" alt=""><div class="hint">הקש על התמונה כדי להגדיל</div></div>
 <div id="pair">
-  <h2>חיבור לג'רוויס</h2>
-  <p>האפליקציה מתחברת לג'רוויס שרץ על המחשב שלך.</p>
+  <h2>חיבור לגילי</h2>
+  <p>האפליקציה מתחברת לגילי שרצה על המחשב שלך.</p>
   <ol>
-    <li>במחשב: פותחים את ג'רוויס ← הגדרות ⚙ ← <b>אייפון</b>.</li>
+    <li>במחשב: פותחים את גילי ← הגדרות ⚙ ← <b>אייפון</b>.</li>
     <li>סורקים את הקוד עם המצלמה של האייפון ופותחים את הקישור.</li>
     <li>בספארי: שיתוף <b>⬆︎</b> ← <b>"הוסף למסך הבית"</b>.</li>
   </ol>
@@ -179,7 +179,7 @@ const SECRET = store.get('jarvis_secret', '');
 // iPhone: an app added to the Home Screen does not share Safari's storage, so the key also lives in its start address
 if (SECRET) {
   if (!location.hash.includes('k=')) history.replaceState(null, '', location.pathname + '#k=' + SECRET);
-  const man = {name: 'J.A.R.V.I.S', short_name: 'JARVIS', lang: 'he', dir: 'rtl', display: 'standalone',
+  const man = {name: 'G.I.L.I', short_name: 'GILI', lang: 'he', dir: 'rtl', display: 'standalone',
     start_url: new URL('./#k=' + SECRET, location.href).href, scope: new URL('./', location.href).href,
     background_color: '#01060b', theme_color: '#01060b',
     icons: [{src: new URL('icon-192.png', location.href).href, sizes: '192x192', type: 'image/png'},
@@ -310,7 +310,7 @@ async function ask(text){
   pending[id] = wait;
   try { await send({type: 'ask', id, text, voice: voiceOn, ts: Date.now() / 1000}); }
   catch(e){ wait.textContent = 'אין חיבור לאינטרנט'; delete pending[id]; setState('idle'); resumeHandsFree(); return; }
-  setTimeout(() => { if (pending[id]) { pending[id].textContent = 'ג\'רוויס לא עונה — האם המחשב דלוק וג\'רוויס פתוח?'; delete pending[id]; setState('idle'); setStatus(false); resumeHandsFree(); } }, 45000);
+  setTimeout(() => { if (pending[id]) { pending[id].textContent = 'גילי לא עונה — האם המחשב דלוק וגילי פתוחה?'; delete pending[id]; setState('idle'); setStatus(false); resumeHandsFree(); } }, 45000);
 }
 function listen(){
   const es = new EventSource('https://ntfy.sh/' + TOPIC + '-r/sse');
@@ -377,7 +377,7 @@ async function sendCmd(obj, label){
   const id = rid(); const el = add('sys', label || '…'); pending[id] = el;
   try { await send(Object.assign({id, ts: Date.now() / 1000}, obj)); }
   catch(e){ el.textContent = 'אין חיבור לאינטרנט'; delete pending[id]; return; }
-  setTimeout(() => { if (pending[id]) { pending[id].textContent = 'ג\'רוויס לא עונה — האם המחשב דלוק וג\'רוויס פתוח?'; delete pending[id]; setStatus(false); } }, 45000);
+  setTimeout(() => { if (pending[id]) { pending[id].textContent = 'גילי לא עונה — האם המחשב דלוק וגילי פתוחה?'; delete pending[id]; setStatus(false); } }, 45000);
   return id;
 }
 let screenWait = null;
@@ -391,7 +391,7 @@ document.querySelectorAll('#panel [data-ask]').forEach(b => b.onclick = () => { 
 $('#panel [data-act=screen]').onclick = async () => {
   const id = await sendCmd({type: 'screen'}, '📸 מצלם את המסך…');
   screenWait = id ? pending[id] : null; if (id) delete pending[id];
-  setTimeout(() => { if (screenWait) { screenWait.textContent = 'לא הגיע צילום מסך — האם המחשב דלוק וג\'רוויס פתוח?'; screenWait = null; } }, 60000);
+  setTimeout(() => { if (screenWait) { screenWait.textContent = 'לא הגיע צילום מסך — האם המחשב דלוק וגילי פתוחה?'; screenWait = null; } }, 60000);
 };
 $('#panel [data-act=upload]').onclick = () => $('#fileIn').click();
 $('#fileIn').onchange = async () => {
@@ -607,7 +607,7 @@ async function syncIntro(m){                       // reply to intro_info from t
   if (!mine || mine.hash !== m.hash) {
     introMsg = add('sys', '🎵 מוריד את שיר הפתיחה מהמחשב…');
     send({type: 'intro_get', ts: Date.now() / 1000}).catch(() => {});
-    setTimeout(() => { if (introMsg) { introMsg.textContent = '🎵 השיר לא הגיע מהמחשב. ודא שג\'רוויס במחשב מעודכן ושהשיר קטן מ־14MB, ופתח שוב את האפליקציה.'; introMsg = null; introSynced = false; } }, 90000);
+    setTimeout(() => { if (introMsg) { introMsg.textContent = '🎵 השיר לא הגיע מהמחשב. ודא שגילי במחשב מעודכן ושהשיר קטן מ־14MB, ופתח שוב את האפליקציה.'; introMsg = null; introSynced = false; } }, 90000);
   }
 }
 async function gotIntro(m){
