@@ -358,6 +358,7 @@ body.gl .reactor .glow{opacity:.18}
         <div class="help">משתמש רק בקרדיטים שכבר יש לך בחשבון. <b>כשהם נגמרים ג'רוויס עובר לבד לקול החינמי</b> ולא קונה עוד, וכשהם מתחדשים בחודש הבא הוא חוזר ל־ElevenLabs. בערך 70 קרדיטים לכל תשובה.<br>מפתח: <a data-link="https://elevenlabs.io/app/settings/api-keys">elevenlabs.io ← API Keys</a> ← Create API Key ← מסמנים הרשאות <b>Text to Speech</b>, <b>Voices</b> (Read) ו־<b>User</b> (Read) ← מעתיקים.<br>כדי לא לשלם בטעות: באתר שלהם, ב־Subscription, ודא ש־<b>Usage-based billing</b> כבוי.</div>
         <input id="sElKey" type="password" placeholder="sk_…" style="margin-bottom:8px">
         <div class="row"><select id="sElVoice"><option value="">— קודם הדבק מפתח —</option></select><button class="btn ghost" id="elLoad" style="flex:0 0 auto">טען קולות</button></div>
+        <div class="row" style="margin-top:6px"><select id="sElMood"><option value="happy">טון: שמחה 😊</option><option value="excited">טון: נלהבת 🤩</option><option value="calm">טון: רגועה 😌</option><option value="neutral">טון: רגיל</option></select></div>
         <div class="help" style="margin-top:8px">רוצה קול מספריית הקולות שלהם (למשל <b>דנית</b>)? חפש כאן, הקש ▶ לשמוע, ו"בחר".</div>
         <div class="row"><input id="elQ" placeholder="שם קול, למשל דנית"><button class="btn ghost" id="elFind" style="flex:0 0 auto">חפש</button></div>
         <div id="elResults" style="max-height:230px;overflow:auto;margin-top:6px"></div>
@@ -603,7 +604,7 @@ function openSettings(cfg){
   $('#sClaude').value = ''; $('#sClaude').placeholder = cfg.has_claude ? 'שמור ' + cfg.claude_mask + ' (השאר ריק כדי לא לשנות)' : 'sk-ant-…';
   if (cfg.voice) $('#sVoice').value = cfg.voice;
   $('#sEngine').value = cfg.tts_engine || 'edge'; window.__cfg = cfg;
-  $('#sElKey').value = ''; $('#sElKey').placeholder = cfg.has_el ? 'המפתח שמור (השאר ריק כדי לא לשנות)' : 'sk_…';
+  $('#sElMood').value = cfg.el_mood || 'happy'; $('#sElKey').value = ''; $('#sElKey').placeholder = cfg.has_el ? 'המפתח שמור (השאר ריק כדי לא לשנות)' : 'sk_…';
   $('#sElVoice').innerHTML = cfg.el_voice_id ? `<option value="${cfg.el_voice_id}" data-name="${cfg.el_voice_name || ''}" data-female="${cfg.el_female ? '1' : ''}">${cfg.el_voice_name || 'הקול שנבחר'}</option>` : '<option value="">— קודם הדבק מפתח —</option>';
   if (cfg.has_el) loadElVoices(cfg.el_voice_id);
   $('#sGemKey').value = ''; $('#sGemKey').placeholder = cfg.has_gemini ? 'שמור ' + cfg.gemini_mask + ' (השאר ריק כדי לא לשנות)' : 'AIza…';
@@ -701,7 +702,7 @@ async function save(quiet){
     pause: $('#sPause').value, bg: $('#sBg').checked, autostart: $('#sAuto').checked, auto_hide: $('#sHide').checked,
     brain_engine: $('#sBrain').value, groq_key: $('#sGroq').value, stt_engine: $('#sStt').value,
     tts_engine: $('#sEngine').value, gemini_key: $('#sGemKey').value, gemini_voice: $('#sGemVoice').value,
-    el_key: $('#sElKey').value, el_voice_id: $('#sElVoice').value,
+    el_key: $('#sElKey').value, el_voice_id: $('#sElVoice').value, el_mood: $('#sElMood').value,
     el_voice_name: ($('#sElVoice').selectedOptions[0] || {dataset: {}}).dataset.name || '',
     el_female: !!(($('#sElVoice').selectedOptions[0] || {dataset: {}}).dataset.female),
     user_name: $('#sName').value, self_gender: $('#sSelfG').value, user_gender: $('#sUserG').value, wake_threshold: $('#sSens').value, routines: $('#sRoutines').value,

@@ -111,7 +111,6 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
   <div class="status" id="status"><i></i><span id="statusTxt">מתחבר…</span></div>
   <div style="display:flex;gap:8px">
     <button class="iconbtn" id="ctlBtn" title="שליטה במחשב">🎛</button>
-    <button class="iconbtn" id="lockBtn" title="נעילה עם Face ID">🔓</button>
     <button class="iconbtn" id="voiceBtn" title="קול">🔊</button>
   </div>
 </header>
@@ -148,12 +147,6 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
 </form>
 
 <div id="viewer"><button class="x" id="viewerX">✕</button><img id="viewerImg" alt=""><div class="hint">הקש על התמונה כדי להגדיל</div></div>
-<div id="lock" style="position:fixed;inset:0;background:var(--bg);display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;z-index:20;text-align:center;padding:30px">
-  <div style="font-size:54px">🔒</div>
-  <h2 style="color:var(--c);font-size:22px">ג'רוויס נעול</h2>
-  <button id="unlockBtn" style="height:50px;padding:0 28px;border-radius:25px;border:1px solid var(--c);background:rgba(63,217,255,.12);color:var(--c);font:inherit;font-size:17px">פתח עם Face ID</button>
-  <div id="lockErr" style="color:var(--red);font-size:14px;min-height:18px"></div>
-</div>
 <div id="pair">
   <h2>חיבור לג'רוויס</h2>
   <p>האפליקציה מתחברת לג'רוויס שרץ על המחשב שלך.</p>
@@ -585,40 +578,7 @@ $('#form').onsubmit = e => { e.preventDefault(); const t = $('#inp').value; $('#
   })(last);
 })();
 
-// ---------- Face ID lock: only you can open the app on this phone
-const rnd = n => crypto.getRandomValues(new Uint8Array(n));
-let lockId = store.get('jarvis_lock', '');
-function lockUI(){ $('#lockBtn').textContent = lockId ? '🔒' : '🔓'; }
-async function faceId(){
-  await navigator.credentials.get({publicKey: {challenge: rnd(32), rpId: location.hostname, userVerification: 'required',
-    allowCredentials: [{type: 'public-key', id: unb64(lockId)}], timeout: 60000}});
-}
-$('#lockBtn').onclick = async () => {
-  if (!window.PublicKeyCredential) { add('sys', 'הטלפון הזה לא תומך בנעילה עם Face ID.'); return; }
-  try {
-    if (!lockId) {
-      const c = await navigator.credentials.create({publicKey: {challenge: rnd(32), rp: {name: 'JARVIS', id: location.hostname},
-        user: {id: rnd(16), name: 'jarvis', displayName: "ג'רוויס"},
-        pubKeyCredParams: [{type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}],
-        authenticatorSelection: {authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred'}, timeout: 60000}});
-      lockId = b64(new Uint8Array(c.rawId)); store.set('jarvis_lock', lockId);
-      add('sys', '🔒 נעילה הופעלה. מעכשיו האפליקציה תיפתח רק עם Face ID.');
-    } else {
-      await faceId(); lockId = ''; store.set('jarvis_lock', ''); add('sys', '🔓 הנעילה בוטלה.');
-    }
-  } catch(e){ add('sys', 'הפעולה בוטלה.'); }
-  lockUI();
-};
-let hiddenAt = 0;
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) hiddenAt = Date.now();
-  else if (lockId && hiddenAt && Date.now() - hiddenAt > 3 * 60 * 1000) { $('#lock').style.display = 'flex'; if (handsFree) setHandsFree(false); }
-});
-$('#unlockBtn').onclick = async () => {
-  try { await faceId(); $('#lock').style.display = 'none'; $('#lockErr').textContent = ''; start(); }
-  catch(e){ $('#lockErr').textContent = 'לא אומת. נסה שוב.'; }
-};
-lockUI();
+try { store.set('jarvis_lock', ''); } catch(e){}            // the Face ID lock was removed
 
 // ---------- boot: tap once (iPhone allows sound only after a tap), then music + loading; it can't be skipped
 try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch(e){}   // play even on silent mode
@@ -663,9 +623,11 @@ function playIntro(){
     const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
     actx = getCtx(); actx.resume();
     const gain = actx.createGain(); gain.connect(actx.destination);
-    introData.then(buf => buf && actx.decodeAudioData(buf.slice(0))).then(ab => {
-      if (!ab) return; const src = actx.createBufferSource(); src.buffer = ab; src.connect(gain); src.start();
-    }).catch(() => {});
+    const builtin = () => fetch('intro.mp3').then(r => r.arrayBuffer()).then(b => actx.decodeAudioData(b));
+    introData.then(buf => buf ? actx.decodeAudioData(buf.slice(0)) : builtin())
+      .catch(() => { idbDel('intro'); return builtin(); })          // the song didn't decode -> built-in sound
+      .then(ab => { if (!ab) return; const src = actx.createBufferSource(); src.buffer = ab; src.connect(gain); src.start(); })
+      .catch(() => {});
     return gain;
   } catch(e){ return null; }
 }
@@ -703,7 +665,7 @@ function start(){
   if (started || !SECRET) return; started = true;
   initCrypto().then(() => { listen(); setInterval(ping, 60000); add('sys', 'שלום! לחץ פעם אחת על המיקרופון ופשוט דבר — אני אקשיב עד שתלחץ שוב.'); });
 }
-function afterBoot(){ if (lockId && SECRET) $('#lock').style.display = 'flex'; else start(); }
+function afterBoot(){ start(); }
 if (SECRET) {
   const b = $('#boot');
   b.addEventListener('click', function go(){ b.removeEventListener('click', go); runBoot(afterBoot); });

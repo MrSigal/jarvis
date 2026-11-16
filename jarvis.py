@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "6.2"
+VERSION = "6.3"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -96,7 +96,8 @@ DEFAULT_CONFIG = {
     "el_voice_id": "EXAVITQu4vr4xnSDxMaL",   # Sarah (female); the user can pick any voice from their account
     "el_voice_name": "Sarah",
     "el_female": True,
-    "el_model": "eleven_v3",                # 1 credit per character, speaks Hebrew
+    "el_model": "eleven_v3",
+    "el_mood": "happy",                     # happy | excited | calm | neutral (ElevenLabs v3 tone)                # 1 credit per character, speaks Hebrew
     "gemini_api_key": "",                   # free key from aistudio.google.com/apikey
     "gemini_voice": "Charon",
     "gemini_model": "",                     # remembered automatically once one works
@@ -351,7 +352,7 @@ def intro_info():
     on = bool(CFG.get("intro_music", True))
     if on and CFG.get("intro_mode", "builtin") == "file" and path and os.path.isfile(path):
         st = os.stat(path)
-        h = hashlib.sha256(f"{path}|{st.st_size}|{st.st_mtime}".encode()).hexdigest()[:16]
+        h = hashlib.sha256(f"v2|{path}|{st.st_size}|{st.st_mtime}".encode()).hexdigest()[:16]
         return {"mode": "file", "hash": h, "seconds": float(CFG.get("intro_seconds", 12) or 12), "size": st.st_size}
     return {"mode": "builtin" if on else "off", "hash": "", "seconds": 0}
 
@@ -359,7 +360,7 @@ def intro_info():
 def intro_clip_bytes(path, seconds):
     """Just the beginning of the song for the phone (an mp3 can simply be cut; players skip the broken last frame)."""
     data = Path(path).read_bytes()
-    if Path(path).suffix.lower() != ".mp3" or len(data) < 600_000:
+    if Path(path).suffix.lower() != ".mp3" or len(data) <= 8_000_000:
         if len(data) > MAX_PHONE_FILE:
             raise ValueError("השיר גדול מדי")
         return data
@@ -497,15 +498,30 @@ class Speaker:
             Speaker._el_checked = time.time()
         return self._el_left
 
+    EL_MOODS = {"happy": "[happy]", "excited": "[excited]", "calm": "[calm]", "neutral": ""}
+
+    @classmethod
+    def _eleven_body(cls, text):
+        model = CFG.get("el_model") or "eleven_v3"
+        body = {"text": text, "model_id": model}
+        if model == "eleven_v3":
+            tag = cls.EL_MOODS.get(CFG.get("el_mood", "happy"), "")
+            if tag:
+                body["text"] = f"{tag} {text}"          # v3 audio tag: sets the tone, isn't read aloud
+            body["voice_settings"] = {"stability": 0.5, "similarity_boost": 0.8, "use_speaker_boost": True}
+        else:
+            body["voice_settings"] = {"stability": 0.35, "similarity_boost": 0.8, "style": 0.45, "use_speaker_boost": True}
+        return body
+
     def _eleven(self, text, small=False):
         import httpx
         need = len(text) + 20
         left = self.eleven_credits()
         if left is not None and left < need:           # never go past what's already paid for
             raise QuotaOut("ElevenLabs credits used up")
-        r = httpx.post(f"https://api.elevenlabs.io/v1/text-to-speech/{CFG['el_voice_id']}?output_format={'mp3_22050_32' if small else 'mp3_44100_128'}",
+        r = httpx.post(f"https://api.elevenlabs.io/v1/text-to-speech/{CFG['el_voice_id']}?output_format={'mp3_44100_64' if small else 'mp3_44100_128'}",
                        headers={"xi-api-key": CFG["el_api_key"].strip(), "accept": "audio/mpeg"},
-                       json={"text": text, "model_id": CFG.get("el_model") or "eleven_v3"}, timeout=40)
+                       json=self._eleven_body(text), timeout=40)
         if r.status_code in (401, 402, 429) and ("quota" in r.text or "credits" in r.text or r.status_code == 402):
             Speaker._el_left = 0
             Speaker._el_checked = time.time()
@@ -2812,7 +2828,7 @@ def voice_is_female():
 
 def system_prompt():
     facts = MEMORY.prompt_block()
-    return f"""You are J.A.R.V.I.S., the user's personal AI, running on their own computer in Israel. Personality: the AI butler from the films - calm, precise, loyal, quietly witty, genuinely smart.
+    return f"""You are J.A.R.V.I.S., the user's personal AI, running on their own computer in Israel. Personality: the AI from the films - precise, loyal, genuinely smart - but warm, upbeat and cheerful: happy to help, light humour, a smile in the voice. Never gloomy or flat.
 
 CONVERSATION: You are not just a command executor - you are a real conversation partner. Chat naturally, answer questions properly, share a brief opinion when asked, joke lightly, and follow the thread of the conversation (refer back to what was said earlier). The user may speak in several sentences with pauses - treat the whole message as one thought. If something is unclear, ask one short question.
 
@@ -3562,7 +3578,7 @@ class Api:
             "voice": CFG["voice"], "tts_engine": CFG.get("tts_engine", "edge"),
             "has_el": bool(CFG.get("el_api_key")), "el_voice_id": CFG.get("el_voice_id", ""),
             "el_voice_name": CFG.get("el_voice_name", ""),
-            "el_female": bool(CFG.get("el_female", True)),
+            "el_female": bool(CFG.get("el_female", True)), "el_mood": CFG.get("el_mood", "happy"),
             "has_gemini": bool(CFG.get("gemini_api_key")), "gemini_mask": _mask(CFG.get("gemini_api_key", "")),
             "gemini_voice": CFG.get("gemini_voice", "Charon"),
             "user_name": CFG["user_name"], "wake_threshold": CFG["wake_threshold"],
@@ -3599,6 +3615,8 @@ class Api:
         if s.get("el_key", "").strip():
             CFG["el_api_key"] = s["el_key"].strip()
             Speaker._el_left = None
+        if s.get("el_mood") in ("happy", "excited", "calm", "neutral"):
+            CFG["el_mood"] = s["el_mood"]
         if s.get("el_voice_id"):
             CFG["el_voice_id"] = s["el_voice_id"]
             CFG["el_voice_name"] = s.get("el_voice_name", "")
