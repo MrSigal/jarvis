@@ -466,6 +466,14 @@ body.gl .reactor .glow{opacity:.18}
         <label>איך לפנות אליך</label>
         <input id="sName" placeholder="אדוני">
       </div>
+      <div class="field">
+        <label>ג'רוויס מדבר על עצמו</label>
+        <select id="sSelfG"><option value="female">בלשון נקבה (אני מוכנה)</option><option value="male">בלשון זכר (אני מוכן)</option><option value="auto">לפי הקול שנבחר</option></select>
+      </div>
+      <div class="field">
+        <label>ופונה אליך</label>
+        <select id="sUserG"><option value="male">בלשון זכר (אתה)</option><option value="female">בלשון נקבה (את)</option></select>
+      </div>
     </div>
 
     <div class="field">
@@ -602,6 +610,7 @@ function openSettings(cfg){
   $('#sGemVoice').value = cfg.gemini_voice || 'Charon';
   showEngine();
   $('#sName').value = cfg.user_name || 'אדוני';
+  $('#sSelfG').value = cfg.self_gender || 'female'; $('#sUserG').value = cfg.user_gender || 'male';
   $('#sCal').value = ''; $('#sCal').placeholder = cfg.has_calendar ? 'מחובר (השאר ריק כדי לא לשנות)' : 'https://calendar.google.com/calendar/ical/.../basic.ics';
   $('#sCalAlerts').checked = cfg.calendar_alerts !== false; $('#calMsg').textContent = '';
   $('#sAscIss').value = cfg.asc_issuer || ''; $('#sAscKid').value = cfg.asc_key_id || ''; $('#sAscVen').value = cfg.asc_vendor || '';
@@ -695,7 +704,7 @@ async function save(quiet){
     el_key: $('#sElKey').value, el_voice_id: $('#sElVoice').value,
     el_voice_name: ($('#sElVoice').selectedOptions[0] || {dataset: {}}).dataset.name || '',
     el_female: !!(($('#sElVoice').selectedOptions[0] || {dataset: {}}).dataset.female),
-    user_name: $('#sName').value, wake_threshold: $('#sSens').value, routines: $('#sRoutines').value,
+    user_name: $('#sName').value, self_gender: $('#sSelfG').value, user_gender: $('#sUserG').value, wake_threshold: $('#sSens').value, routines: $('#sRoutines').value,
     intro_music: $('#sIntro').checked, intro_mode: $('#sIntroMode').value,
     calendar_ics: $('#sCal').value, calendar_alerts: $('#sCalAlerts').checked,
     asc_issuer: $('#sAscIss').value, asc_key_id: $('#sAscKid').value, asc_vendor: $('#sAscVen').value,

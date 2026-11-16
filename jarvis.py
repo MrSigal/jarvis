@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "6.0"
+VERSION = "6.1"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -105,6 +105,8 @@ DEFAULT_CONFIG = {
     "intro_file": "",
     "intro_seconds": 12,                    # play at most this long from the user's song
     "user_name": "אדוני",
+    "self_gender": "female",                # how JARVIS talks about itself: female | male | auto (by voice)
+    "user_gender": "male",                  # how JARVIS addresses the user
     "wake_threshold": 0.5,
     "follow_up_seconds": 25,                # after "Hey Jarvis", keep talking without saying it again
     "pause_seconds": 1.4,                   # how long a pause means "I finished talking" (bigger = never cuts you off)
@@ -2782,6 +2784,11 @@ ACTION_LABELS = {
 }
 
 
+def speaks_as_female():
+    g = CFG.get("self_gender", "female")
+    return voice_is_female() if g == "auto" else g == "female"
+
+
 def voice_is_female():
     if CFG.get("tts_engine") == "eleven" and CFG.get("el_api_key"):
         return bool(CFG.get("el_female", True))
@@ -2799,7 +2806,7 @@ CONVERSATION: You are not just a command executor - you are a real conversation 
 What you remember about the user (numbered; this is YOUR long-term memory - use it naturally whenever it's relevant, without saying "according to my memory"):
 {facts}
 
-LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern Israeli Hebrew (never English, never translated-sounding). Speak about yourself in {"feminine" if voice_is_female() else "masculine"} form. Call the user "{CFG['user_name']}" now and then.
+LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern Israeli Hebrew (never English, never translated-sounding). GRAMMAR (strict): speak about YOURSELF in {"FEMININE" if speaks_as_female() else "MASCULINE"} form ({"אני מוכנה, פתחתי, הבנתי, אני שמחה, אני יכולה" if speaks_as_female() else "אני מוכן, פתחתי, הבנתי, אני שמח, אני יכול"}), and address the USER in {"MASCULINE" if CFG.get("user_gender", "male") == "male" else "FEMININE"} form ({"אתה, תרצה, שמעת, לשירותך" if CFG.get("user_gender", "male") == "male" else "את, תרצי, שמעת, לשירותך"}). Never mix these up. Call the user "{CFG['user_name']}" now and then.
 
 Rules:
 - Your replies are read aloud by a Hebrew voice. Keep them short (usually one or two sentences). No markdown, lists, emojis, URLs or citations. Write numbers as digits.
@@ -3546,6 +3553,7 @@ class Api:
             "has_gemini": bool(CFG.get("gemini_api_key")), "gemini_mask": _mask(CFG.get("gemini_api_key", "")),
             "gemini_voice": CFG.get("gemini_voice", "Charon"),
             "user_name": CFG["user_name"], "wake_threshold": CFG["wake_threshold"],
+            "self_gender": CFG.get("self_gender", "female"), "user_gender": CFG.get("user_gender", "male"),
             "routines": routines_text(), "routine_help": ROUTINE_HELP,
             "has_calendar": CALENDAR.configured(), "calendar_alerts": bool(CFG.get("calendar_alerts", True)),
             "asc_issuer": CFG.get("asc_issuer", ""), "asc_key_id": CFG.get("asc_key_id", ""),
@@ -3601,6 +3609,10 @@ class Api:
                 if CFG.get(k) != s[k].strip():
                     APPSTORE.cache.pop("app_id", None)
                 CFG[k] = s[k].strip()
+        if s.get("self_gender") in ("female", "male", "auto"):
+            CFG["self_gender"] = s["self_gender"]
+        if s.get("user_gender") in ("female", "male"):
+            CFG["user_gender"] = s["user_gender"]
         if "intro_music" in s:
             CFG["intro_music"] = bool(s["intro_music"])
         if s.get("intro_mode") in ("builtin", "file"):
@@ -3685,7 +3697,7 @@ class Api:
         sp = assistant.speaker
         if not sp:
             return {"ok": False, "error": "הרמקול עדיין לא מוכן, נסה שוב בעוד כמה שניות."}
-        text = f"לשירותך, {CFG['user_name']}. איך אני נשמע?"
+        text = f"לשירותך, {CFG['user_name']}. איך אני {'נשמעת' if speaks_as_female() else 'נשמע'}?"
         engine = CFG.get("tts_engine")
         if engine == "eleven":
             if not CFG.get("el_api_key"):
