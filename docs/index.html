@@ -253,9 +253,7 @@ async function playVoice(m){
   const w = voiceWait[m.id]; if (!w) return;               // too late: the fallback already spoke
   clearTimeout(w.t); delete voiceWait[m.id];
   try {
-    const r = await fetch(m.url); if (!r.ok) throw new Error(r.status);
-    const raw = new Uint8Array(await r.arrayBuffer());
-    const pt = await crypto.subtle.decrypt({name: 'AES-GCM', iv: raw.slice(0, 12)}, KEY, raw.slice(12));
+    const pt = await fetchBlob(m);
     const url = URL.createObjectURL(new Blob([pt], {type: m.mime}));
     player.onended = () => { URL.revokeObjectURL(url); doneSpeaking(); };
     player.onerror = () => { speakFallback(w.text); };
@@ -311,6 +309,33 @@ function listen(){
 }
 async function ping(){ try { await send({type: 'ping', ts: Date.now() / 1000}); } catch(e){} setTimeout(() => { if (Date.now() - lastPong > 12000) setStatus(false); }, 10000); }
 
+// ---------- big things travel as encrypted pieces (the free relay takes about 2MB per piece)
+const PIECE = 1800000;
+async function fetchBlob(m){
+  const urls = m.urls || [m.url]; const parts = [];
+  for (const u of urls) {
+    const r = await fetch(u); if (!r.ok) throw new Error(r.status);
+    const raw = new Uint8Array(await r.arrayBuffer());
+    parts.push(new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv: raw.slice(0, 12)}, KEY, raw.slice(12))));
+  }
+  if (parts.length === 1) return parts[0].buffer;
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out.buffer;
+}
+async function uploadBlob(bytes){
+  const urls = [];
+  for (let i = 0; i < bytes.length || i === 0; i += PIECE) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv}, KEY, bytes.slice(i, i + PIECE)));
+    const body = new Uint8Array(12 + ct.length); body.set(iv); body.set(ct, 12);
+    const r = await fetch('https://ntfy.sh/' + TOPIC + '-f', {method: 'PUT', body, headers: {'Filename': 'blob.bin'}});
+    const j = await r.json(); if (!j.attachment) throw new Error(j.error || ('upload ' + r.status));
+    urls.push(j.attachment.url);
+  }
+  return urls;
+}
+
 // ---------- PC control panel, screen, files, routines
 $('#ctlBtn').onclick = () => { const o = $('#panel').classList.toggle('open'); if (o && KEY) send({type: 'routines', ts: Date.now() / 1000}).catch(() => {}); };
 const rid = () => Math.random().toString(36).slice(2);
@@ -340,21 +365,15 @@ $('#fileIn').onchange = async () => {
   if (f.size > 14 * 1024 * 1024) { add('sys', 'הקובץ גדול מדי (עד 14MB).'); return; }
   const el = add('sys', '📤 שולח את ' + f.name + '…');
   try {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ct = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv}, KEY, await f.arrayBuffer()));
-    const body = new Uint8Array(12 + ct.length); body.set(iv); body.set(ct, 12);
-    const r = await fetch('https://ntfy.sh/' + TOPIC + '-f', {method: 'PUT', body, headers: {'Filename': 'blob.bin'}});
-    const j = await r.json(); if (!j.attachment) throw new Error(j.error || 'upload');
+    const urls = await uploadBlob(new Uint8Array(await f.arrayBuffer()));
     el.remove();
-    sendCmd({type: 'upload', url: j.attachment.url, name: f.name}, '📤 ' + f.name + ' — ממתין למחשב…');
+    sendCmd({type: 'upload', urls, name: f.name}, '📤 ' + f.name + ' — ממתין למחשב…');
   } catch(e){ el.textContent = 'השליחה נכשלה: ' + e.message; }
 };
 async function gotFile(m){
   const el = screenWait || add('sys', '📥 מקבל ' + (m.name || 'קובץ') + '…'); screenWait = null;
   try {
-    const r = await fetch(m.url); if (!r.ok) throw new Error(r.status);
-    const raw = new Uint8Array(await r.arrayBuffer());
-    const pt = await crypto.subtle.decrypt({name: 'AES-GCM', iv: raw.slice(0, 12)}, KEY, raw.slice(12));
+    const pt = await fetchBlob(m);
     const blob = new Blob([pt], {type: m.mime || 'application/octet-stream'});
     const url = URL.createObjectURL(blob);
     el.className = 'msg j'; el.textContent = m.kind === 'image' ? '' : '📄 ' + m.name;
@@ -385,8 +404,7 @@ function showClip(text){
 }
 async function gotClip(m){
   try {
-    const r = await fetch(m.url); const raw = new Uint8Array(await r.arrayBuffer());
-    const pt = await crypto.subtle.decrypt({name: 'AES-GCM', iv: raw.slice(0, 12)}, KEY, raw.slice(12));
+    const pt = await fetchBlob(m);
     showClip(new TextDecoder().decode(pt));
   } catch(e){ add('sys', 'לא הצלחתי לקבל את הטקסט מהמחשב'); }
 }
@@ -398,11 +416,8 @@ $('#panel [data-act=clip_up]').onclick = async () => {
   if (!text.trim()) return;
   if (new TextEncoder().encode(text).length <= 1800) { sendCmd({type: 'clip', text}, '📋 מעתיק למחשב…'); return; }
   try {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ct = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv}, KEY, new TextEncoder().encode(text)));
-    const body = new Uint8Array(12 + ct.length); body.set(iv); body.set(ct, 12);
-    const j = await (await fetch('https://ntfy.sh/' + TOPIC + '-f', {method: 'PUT', body, headers: {'Filename': 'blob.bin'}})).json();
-    sendCmd({type: 'clip', url: j.attachment.url}, '📋 מעתיק למחשב…');
+    const urls = await uploadBlob(new TextEncoder().encode(text));
+    sendCmd({type: 'clip', urls}, '📋 מעתיק למחשב…');
   } catch(e){ add('sys', 'ההעתקה נכשלה: ' + e.message); }
 };
 
@@ -597,9 +612,7 @@ async function syncIntro(m){                       // reply to intro_info from t
 }
 async function gotIntro(m){
   try {
-    const r = await fetch(m.url); if (!r.ok) throw new Error(r.status);
-    const raw = new Uint8Array(await r.arrayBuffer());
-    const pt = await crypto.subtle.decrypt({name: 'AES-GCM', iv: raw.slice(0, 12)}, KEY, raw.slice(12));
+    const pt = await fetchBlob(m);
     await idbSet('intro', {hash: m.hash, seconds: m.seconds, data: pt});
     const t = '🎵 השיר שבחרת במחשב נשמר. מהפעם הבאה שתפתח את האפליקציה הוא יתנגן בפתיחה.';
     if (introMsg) introMsg.textContent = t; else add('sys', t); introMsg = null;

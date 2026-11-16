@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "5.4"
+VERSION = "5.5"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -337,6 +337,25 @@ def intro_info():
         h = hashlib.sha256(f"{path}|{st.st_size}|{st.st_mtime}".encode()).hexdigest()[:16]
         return {"mode": "file", "hash": h, "seconds": float(CFG.get("intro_seconds", 12) or 12), "size": st.st_size}
     return {"mode": "builtin" if on else "off", "hash": "", "seconds": 0}
+
+
+def intro_clip_bytes(path, seconds):
+    """Just the beginning of the song for the phone (an mp3 can simply be cut; players skip the broken last frame)."""
+    data = Path(path).read_bytes()
+    if Path(path).suffix.lower() != ".mp3" or len(data) < 600_000:
+        if len(data) > MAX_PHONE_FILE:
+            raise ValueError("השיר גדול מדי")
+        return data
+    length = 0
+    try:
+        import pygame
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+        length = pygame.mixer.Sound(path).get_length()
+    except Exception:
+        pass
+    bps = len(data) / length if length > 5 else 40_000          # bytes per second (40KB/s = 320kbps worst case)
+    return data[:int(bps * seconds) + 64_000]
 
 
 def play_intro(pygame):
@@ -1214,7 +1233,8 @@ def get_datetime():
 
 
 # ======================================================================= PHONE EXTRAS: screen, files, PC control, routines
-MAX_PHONE_FILE = 14 * 1024 * 1024          # ntfy.sh attachment limit is 15 MB
+MAX_PHONE_FILE = 14 * 1024 * 1024
+BLOB_PIECE = 1_800_000                     # ntfy.sh free tier: about 2MB per attachment, so big files go in pieces
 
 
 def screenshot_jpeg(max_w=1600, quality=70):
@@ -2250,23 +2270,37 @@ class PhoneLink:
         """Big things (screenshots, files) go as an encrypted ntfy attachment; the app gets a small sealed pointer."""
         import httpx, os as _os
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        iv = _os.urandom(12)
-        r = httpx.put(f"https://ntfy.sh/{self.topic}-f", content=iv + AESGCM(self.key).encrypt(iv, data, None),
-                      headers={"Filename": "blob.bin"}, timeout=120)
-        r.raise_for_status()
-        url = r.json()["attachment"]["url"]
-        self.reply(dict({"type": "file", "kind": kind, "name": name, "mime": mime, "url": url, "size": len(data)}, **(extra or {})))
+        urls = []
+        for i in range(0, max(1, len(data)), BLOB_PIECE):    # the free relay takes ~2MB per attachment
+            iv = _os.urandom(12)
+            r = httpx.put(f"https://ntfy.sh/{self.topic}-f",
+                          content=iv + AESGCM(self.key).encrypt(iv, data[i:i + BLOB_PIECE], None),
+                          headers={"Filename": "blob.bin"}, timeout=120)
+            if r.status_code == 413:
+                raise ValueError("השרת דחה קובץ גדול מדי")
+            if r.status_code == 429:
+                raise ValueError("הגעת למגבלה היומית של שליחת קבצים (נסה שוב מחר)")
+            r.raise_for_status()
+            urls.append(r.json()["attachment"]["url"])
+        self.reply(dict({"type": "file", "kind": kind, "name": name, "mime": mime, "urls": urls, "url": urls[0],
+                         "size": len(data)}, **(extra or {})))
 
-    def fetch_blob(self, url):
+    def fetch_blob(self, urls):
         import httpx
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        if not re.match(r"^https://ntfy\.sh/file/[\w.-]+$", url or ""):
-            raise ValueError("bad file address")
-        r = httpx.get(url, timeout=120, follow_redirects=True)
-        r.raise_for_status()
-        if len(r.content) > MAX_PHONE_FILE + 64:
-            raise ValueError("file too big")
-        return AESGCM(self.key).decrypt(r.content[:12], r.content[12:], None)
+        urls = urls if isinstance(urls, list) else [urls]
+        if not urls or len(urls) > MAX_PHONE_FILE // BLOB_PIECE + 2:
+            raise ValueError("bad file")
+        out = b""
+        for url in urls:
+            if not re.match(r"^https://ntfy\.sh/file/[\w.-]+$", url or ""):
+                raise ValueError("bad file address")
+            r = httpx.get(url, timeout=120, follow_redirects=True)
+            r.raise_for_status()
+            out += AESGCM(self.key).decrypt(r.content[:12], r.content[12:], None)
+            if len(out) > MAX_PHONE_FILE:
+                raise ValueError("file too big")
+        return out
 
     def push(self, obj):
         """Notification to the iPhone app (shown if the app is open)."""
@@ -2330,9 +2364,7 @@ class PhoneLink:
             info = intro_info()
             if info["mode"] == "file":
                 try:
-                    data = Path(CFG["intro_file"]).read_bytes()
-                    if len(data) > MAX_PHONE_FILE:
-                        raise ValueError("השיר גדול מ־14MB")
+                    data = intro_clip_bytes(CFG["intro_file"], info["seconds"] + 10)
                     self.send_blob(data, "intro" + Path(CFG["intro_file"]).suffix.lower(), "audio/mpeg", "intro",
                                    {"hash": info["hash"], "seconds": info["seconds"]})
                 except Exception as e:
@@ -2340,7 +2372,8 @@ class PhoneLink:
                     self.reply({"type": "intro_error", "text": str(e)[:200]})
         elif m.get("type") == "clip":
             try:
-                text = self.fetch_blob(m["url"]).decode("utf-8") if m.get("url") else str(m.get("text", ""))
+                src = m.get("urls") or m.get("url")
+                text = self.fetch_blob(src).decode("utf-8") if src else str(m.get("text", ""))
                 msg = paste_from_phone(text)
             except Exception as e:
                 msg = f"לא הצלחתי להעתיק: {e}"
@@ -2359,7 +2392,7 @@ class PhoneLink:
             self.reply({"type": "answer", "id": m.get("id"), "text": text})
         elif m.get("type") == "upload":
             try:
-                path = save_from_phone(self.fetch_blob(m.get("url")), m.get("name"))
+                path = save_from_phone(self.fetch_blob(m.get("urls") or m.get("url")), m.get("name"))
                 ui.action(f"📱 קובץ התקבל: {path.name}")
                 notify(f"📥 התקבל קובץ מהטלפון: {path.name}")
                 text = f"שמרתי את {path.name} במחשב, בתיקייה הורדות ← Jarvis."
