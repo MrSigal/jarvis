@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "5.6"
+VERSION = "5.7"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -2520,29 +2520,83 @@ PHONE = PhoneLink()
 
 
 class Memory:
-    """Facts the user asked JARVIS to remember."""
+    """Things the user asked JARVIS to remember. Each fact keeps a fixed number (never reused) so it can be
+    changed or forgotten exactly, even while a conversation still shows an older list."""
+    LIMIT = 300
+
     def __init__(self):
+        self.lock = threading.Lock()
         try:
-            self.facts = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+            raw = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
         except Exception:
-            self.facts = []
+            raw = []
+        self.items = []
+        for x in raw:                               # old versions stored plain strings
+            if isinstance(x, str):
+                x = {"text": x, "date": ""}
+            if isinstance(x, dict) and x.get("text"):
+                self.items.append({"id": int(x.get("id") or 0), "text": x["text"].strip(), "date": x.get("date", "")})
+        self.next_id = max([i["id"] for i in self.items] + [0]) + 1
+        for i in self.items:
+            if not i["id"]:
+                i["id"], self.next_id = self.next_id, self.next_id + 1
+
+    @property
+    def facts(self):
+        return [i["text"] for i in self.items]
 
     def save(self):
-        MEMORY_FILE.write_text(json.dumps(self.facts, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp = MEMORY_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps([{"id": i["id"], "text": i["text"], "date": i["date"]} for i in self.items],
+                                  ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, MEMORY_FILE)
+
+    def prompt_block(self):
+        if not self.items:
+            return "- (nothing yet)"
+        return "\n".join(f"[{i['id']}] {i['text']}" + (f" (נשמר {i['date']})" if i["date"] else "") for i in self.items)
 
     def remember(self, fact):
-        fact = fact.strip()
-        if fact and fact not in self.facts:
-            self.facts.append(fact)
-            self.facts = self.facts[-60:]
+        fact = (fact or "").strip()
+        if not fact:
+            return {"ok": False, "error": "empty"}
+        with self.lock:
+            low = fact.lower()
+            for i in self.items:
+                if i["text"].lower() == low:
+                    return {"ok": True, "already_known": i["id"]}
+            self.items.append({"id": self.next_id, "text": fact, "date": datetime.now().strftime("%d.%m.%Y")})
+            self.next_id += 1
+            self.items = self.items[-self.LIMIT:]
             self.save()
-        return {"ok": True, "remembered": fact}
+        return {"ok": True, "remembered": fact, "id": self.next_id - 1, "total": len(self.items)}
 
-    def forget(self, contains):
-        before = len(self.facts)
-        self.facts = [f for f in self.facts if contains not in f]
-        self.save()
-        return {"ok": True, "forgot": before - len(self.facts)}
+    def update(self, id, fact):
+        with self.lock:
+            for i in self.items:
+                if i["id"] == int(id):
+                    old, i["text"], i["date"] = i["text"], fact.strip(), datetime.now().strftime("%d.%m.%Y")
+                    self.save()
+                    return {"ok": True, "was": old, "now": i["text"]}
+        return {"ok": False, "error": f"no fact number {id}"}
+
+    def forget(self, ids=None, contains="", everything=False):
+        with self.lock:
+            before = len(self.items)
+            if everything:
+                gone = self.facts
+                self.items = []
+            else:
+                ids = {int(x) for x in (ids or []) if str(x).strip().lstrip("-").isdigit()}
+                c = (contains or "").strip()
+                gone = [i["text"] for i in self.items if i["id"] in ids or (c and c in i["text"])]
+                self.items = [i for i in self.items if not (i["id"] in ids or (c and c in i["text"]))]
+            self.save()
+        return {"ok": True, "forgot": before - len(self.items), "removed": gone[:20],
+                "note": "" if gone else "nothing matched - look at the numbered list and pass the right ids"}
+
+    def listing(self):
+        return {"facts": [{"id": i["id"], "text": i["text"], "date": i["date"]} for i in self.items]}
 
 
 MEMORY = Memory()
@@ -2593,8 +2647,11 @@ TOOLS = [
        {"command": S, "confirmed": {"type": "boolean"}}, ["command"]),
 ]
 TOOLS += [
-    _t("remember", "Save a fact about the user for the future (name, family, preferences, important dates...) when they ask you to remember something or tell you something clearly worth remembering.", {"fact": S}, ["fact"]),
-    _t("forget", "Delete remembered facts that contain the given words.", {"contains": S}, ["contains"]),
+    _t("remember", "Save something for the future when the user asks you to remember it (תזכור / תרשום לך / אל תשכח ש...), or tells you a clear lasting fact about himself. Write it as a short, self-contained Hebrew sentence in third person about the user (e.g. 'המשתמש אוהב פיצה עם זיתים', 'יום ההולדת של אמא של המשתמש ב־3 במאי'). If it changes a fact you already have, use update_memory instead.", {"fact": S}, ["fact"]),
+    _t("update_memory", "Correct/replace a remembered fact by its number (from the numbered memory list).", {"id": {"type": "integer"}, "fact": S}, ["id", "fact"]),
+    _t("forget", "Forget remembered facts when the user asks (תשכח / תמחק מהזיכרון / זה כבר לא נכון). Pass the numbers of ALL matching facts from the numbered memory list. everything=true only if the user clearly asked to forget everything AND confirmed.",
+       {"ids": {"type": "array", "items": {"type": "integer"}}, "contains": S, "everything": {"type": "boolean"}}),
+    _t("list_memory", "Everything you remember about the user (numbered)."),
     _t("check_email", "Read the user's new unread emails (sender, subject, preview) - for 'do I have new mail?' or 'what did X write?'. Summarize briefly in Hebrew.", {"limit": {"type": "number"}}),
     _t("set_reminder", "Set a reminder the user asked for. Give minutes from now OR a clock time 'HH:MM'. It is spoken on the PC and shown as a notification on the PC and in the iPhone app.",
        {"text": S, "minutes": {"type": "number"}, "at": S}, ["text"]),
@@ -2628,7 +2685,7 @@ ACTION_LABELS = {
     "get_datetime": "בודק שעה", "system_info": "אבחון מערכת", "power": "חשמל: {action}",
     "run_powershell": "פקודה: {command}", "web_search": "חיפוש ברשת: {query}",
     "read_webpage": "קורא דף: {url}", "get_weather": "מזג אוויר: {city}",
-    "check_email": "בודק מיילים", "remember": "זוכר: {fact}", "forget": "שוכח: {contains}", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
+    "check_email": "בודק מיילים", "remember": "זוכר: {fact}", "forget": "שוכח", "update_memory": "מעדכן זיכרון: {fact}", "list_memory": "בודק מה אני זוכר", "set_reminder": "תזכורת: {text}", "list_reminders": "בודק תזכורות",
     "cancel_reminders": "מבטל תזכורות", "morning_brief": "מכין תדריך בוקר", "send_to_phone": "שולח לטלפון: {what}",
     "run_routine": "שגרה: {name}", "list_routines": "בודק שגרות", "save_routine": "שומר שגרה: {name}",
     "delete_routine": "מוחק שגרה: {name}", "copy_to_phone": "מעתיק לטלפון", "calendar_events": "בודק ביומן",
@@ -2637,12 +2694,12 @@ ACTION_LABELS = {
 
 
 def system_prompt():
-    facts = "\n".join(f"- {f}" for f in MEMORY.facts) or "- (nothing yet)"
+    facts = MEMORY.prompt_block()
     return f"""You are J.A.R.V.I.S., the user's personal AI, running on their own computer in Israel. Personality: the AI butler from the films - calm, precise, loyal, quietly witty, genuinely smart.
 
 CONVERSATION: You are not just a command executor - you are a real conversation partner. Chat naturally, answer questions properly, share a brief opinion when asked, joke lightly, and follow the thread of the conversation (refer back to what was said earlier). The user may speak in several sentences with pauses - treat the whole message as one thought. If something is unclear, ask one short question.
 
-What you know about the user (from earlier conversations):
+What you remember about the user (numbered; this is YOUR long-term memory - use it naturally whenever it's relevant, without saying "according to my memory"):
 {facts}
 
 LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern Israeli Hebrew (never English, never translated-sounding). Speak about yourself in masculine form. Call the user "{CFG['user_name']}" now and then.
@@ -2657,7 +2714,7 @@ Rules:
 - You DO have internet access through web_search, read_webpage and get_weather. For anything current (news, weather, prices, sports, people, opening hours...) use them and answer in your own words in Hebrew. Never say you can't access the internet. Default weather location: the user's location (leave city empty) unless they name a place.
 - For the current time or date, call get_datetime.
 - Music/videos: when the user wants to hear or watch something ("תנגן", "תשים", "אני רוצה לשמוע"), call play_youtube - it starts playing. Then say briefly what is playing.
-- Memory: when the user tells you something worth remembering about them, or asks you to remember, call remember.
+- MEMORY (important): "תזכור ש..." / "תרשום לך" / "אל תשכח" -> call remember, then confirm in a few words ("רשמתי לי."). A correction ("לא, עכשיו אני בן 16", "עברתי דירה") -> update_memory on the old fact's number. "תשכח את..." / "תמחק מהזיכרון" / "זה כבר לא נכון" -> forget with the numbers of every matching fact, then confirm what you forgot. "תשכח הכל" -> first ask "למחוק את כל מה שאני זוכר עליך?" and only after a clear yes call forget with everything=true. "מה אתה זוכר עליי?" -> answer from the list in natural Hebrew. Never invent memories.
 - Anything Google or web (Google search, YouTube, Gmail, Google Maps, Drive, Translate, any site) opens in Google Chrome: use google_search / youtube_search / open_website (e.g. Gmail -> https://mail.google.com, Maps -> https://www.google.com/maps/search/<place>). Don't open another browser.
 - Reminders: set_reminder (only when asked). You have no WhatsApp or SMS access.
 - Good morning / briefing: call morning_brief, then speak a short natural briefing (3-5 sentences): greeting, weather, today's reminders, and only the important new emails. Don't read addresses.
@@ -2706,7 +2763,9 @@ class Brain:
             "power": lambda: power(a["action"]), "run_powershell": lambda: run_powershell(a["command"]),
             "web_search": lambda: web_search(a["query"]), "read_webpage": lambda: read_webpage(a["url"]),
             "check_email": lambda: MAIL.summary_for_voice(int(a.get("limit") or 8)),
-            "remember": lambda: MEMORY.remember(a["fact"]), "forget": lambda: MEMORY.forget(a["contains"]),
+            "remember": lambda: MEMORY.remember(a["fact"]),  # noqa
+            "forget": lambda: MEMORY.forget(a.get("ids"), a.get("contains", ""), bool(a.get("everything"))),
+            "update_memory": lambda: MEMORY.update(a["id"], a["fact"]), "list_memory": MEMORY.listing,
             "set_reminder": lambda: REMINDERS.add(a["text"], a.get("minutes"), a.get("at")),
             "list_reminders": lambda: REMINDERS.list(),
             "cancel_reminders": lambda: REMINDERS.cancel(a.get("contains", "")),
@@ -3529,6 +3588,18 @@ class Api:
                     os._exit(0)
         except Exception as e:
             log.error(f"window action {action}: {e}")
+
+    def memory_list(self):
+        return MEMORY.listing()["facts"]
+
+    def memory_forget(self, id):
+        MEMORY.forget([int(id)])
+        return MEMORY.listing()["facts"]
+
+    def memory_add(self, text):
+        if text and text.strip():
+            MEMORY.remember(text.strip())
+        return MEMORY.listing()["facts"]
 
     def cal_test(self):
         if not CALENDAR.configured():
