@@ -313,6 +313,10 @@ form{border-top:0;background:none;padding:10px 16px 16px;gap:10px}
     <button class="pb" data-ask="תקשיבי לפגישה"><b>🎙</b>הקשיבי לפגישה</button>
     <button class="pb" data-ask="מה סיכמנו?"><b>📝</b>סכמי פגישה</button>
     <button class="pb" data-ask="מה את זוכרת עליי?"><b>🧠</b>זיכרון</button>
+    <button class="pb" data-ask="מה יש ברשימת הקניות?"><b>🛒</b>רשימת קניות</button>
+    <button class="pb" data-ask="מה יש ברשימת המשימות?"><b>✅</b>משימות</button>
+    <button class="pb" data-act="list_add"><b>➕</b>הוסף לרשימה</button>
+    <button class="pb" data-ask="תסכמי לי בקצרה את הקובץ האחרון שהורדתי"><b>📄</b>סכמי קובץ</button>
     <button class="pb" data-ask="תתעדכני"><b>⬇️</b>עדכני את גילי</button>
   </div>
   <div id="volrow" data-grid="media"><span>🔈</span><input type="range" id="vol" min="0" max="100" step="5" value="50"><span>🔊</span><b id="volN">50</b></div>
@@ -598,6 +602,7 @@ showTab(document.querySelector('#tabs .tab[data-tab="' + store.get('jarvis_tab',
 $('#vol').oninput = () => { $('#volN').textContent = $('#vol').value; };
 $('#vol').onchange = () => quickCmd({type: 'cmd', cmd: 'vol:' + $('#vol').value});
 const typeToPc = enter => { const t = prompt(enter ? 'מה להקליד במחשב? (בסוף יילחץ Enter)' : 'מה להקליד במחשב?') || ''; if (t.trim()) quickCmd({type: 'type', text: t, enter}); };
+$('#panel [data-act=list_add]').onclick = () => { const t = (prompt('מה להוסיף לרשימת הקניות?') || '').trim(); if (t) { closePanel(); busy = true; ask('תוסיפי לרשימת הקניות: ' + t); } };
 $('#panel [data-act=type]').onclick = () => typeToPc(false);
 $('#panel [data-act=type_enter]').onclick = () => typeToPc(true);
 $('#panel [data-act=screen]').onclick = async () => {

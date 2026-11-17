@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "8.1"
+VERSION = "9.0"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -67,7 +67,7 @@ DEFAULT_CONFIG = {
     "anthropic_api_key": "",
     "brain_engine": "claude",               # claude (paid, smartest) | groq (free)
     "groq_api_key": "",                     # free key from console.groq.com/keys
-    "groq_models": ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"],
+    "groq_models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"],
     "stt_engine": "google",                 # google | groq (Whisper)
     "claude_model": "claude-haiku-5-5",   # cheapest Claude model
     "voice": "he-IL-AvriNeural",            # free Hebrew male voice (female: he-IL-HilaNeural)
@@ -210,6 +210,8 @@ def load_config():
     if not cfg.get("_pause_v70") and float(cfg.get("pause_seconds", 2.0)) < 2.0:   # v7.0: don't cut the user off
         cfg["pause_seconds"] = 2.0
     cfg["_pause_v70"] = True
+    if cfg.get("groq_models") == ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"]:
+        cfg["groq_models"] = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"]
     if not cfg.get("_voice_v71"):                           # v7.1: one steady, natural Hebrew voice
         cfg["_voice_v71"] = True
         cfg["el_mood"] = "neutral"                          # mood tags made v3 change the voice from answer to answer
@@ -2517,48 +2519,269 @@ class Reminders:
         except Exception as e:
             log.error(f"reminders save: {e}")
 
-    def add(self, text, minutes=None, at=None, whatsapp=False):   # 'whatsapp' kept only so old saved items load
+    REPEATS = {"daily": "כל יום", "weekdays": "כל יום חול", "weekly": "כל שבוע"}
+
+    @staticmethod
+    def _next(due, repeat):
+        """The next time a repeating item is due (weekdays = Sunday to Thursday)."""
+        from datetime import timedelta
+        d = due + timedelta(days=7 if repeat == "weekly" else 1)
+        while repeat == "weekdays" and d.weekday() in (4, 5):
+            d += timedelta(days=1)
+        return d
+
+    def add(self, text, minutes=None, at=None, whatsapp=False, date=None, repeat=None, task=None):
+        from datetime import timedelta                      # 'whatsapp' kept only so old saved items load
         now = datetime.now()
-        if at:
+        repeat = repeat if repeat in self.REPEATS else None
+        day = None
+        if date:
+            d = str(date).strip().lower()
             try:
-                hh, mm = [int(x) for x in str(at).strip().split(":")[:2]]
-                due = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-                if due <= now:
-                    due = due.replace(day=now.day) + __import__("datetime").timedelta(days=1)
+                day = (now.date() if d == "today" else now.date() + timedelta(days=1) if d == "tomorrow"
+                       else datetime.strptime(d[:10], "%Y-%m-%d").date())
+            except Exception:
+                return {"ok": False, "error": "תאריך לא תקין, צריך YYYY-MM-DD"}
+        if at or day:
+            try:
+                hh, mm = [int(x) for x in str(at or "09:00").strip().split(":")[:2]]
+                due = datetime.combine(day or now.date(), datetime.min.time()).replace(hour=hh, minute=mm)
             except Exception:
                 return {"ok": False, "error": "שעה לא תקינה, צריך HH:MM"}
+            if due <= now:
+                if day and not repeat:
+                    return {"ok": False, "error": "הזמן הזה כבר עבר"}
+                due += timedelta(days=1)
+            while repeat == "weekdays" and due.weekday() in (4, 5):
+                due += timedelta(days=1)
         elif minutes is not None:
-            due = now + __import__("datetime").timedelta(minutes=float(minutes))
+            due = now + timedelta(minutes=float(minutes))
         else:
-            return {"ok": False, "error": "צריך זמן (minutes או at)"}
+            return {"ok": False, "error": "צריך זמן (minutes, at או date)"}
         item = {"id": int(time.time() * 1000), "text": text, "due": due.isoformat(timespec="seconds")}
+        if repeat:
+            item["repeat"] = repeat
+        if task:
+            item["task"] = task
         with self.lock:
             self.items.append(item)
             self._save()
-        return {"ok": True, "due": due.strftime("%H:%M"), "date": due.strftime("%d/%m")}
+        out = {"ok": True, "due": due.strftime("%H:%M"), "date": due.strftime("%d/%m"),
+               "day": "יום " + HE_DAYS[due.weekday()]}
+        if repeat:
+            out["repeats"] = self.REPEATS[repeat]
+        return out
 
     def list(self):
-        return {"reminders": [{"text": i["text"], "due": i["due"][11:16], "date": i["due"][8:10] + "/" + i["due"][5:7]}
+        return {"reminders": [dict({"text": i["text"], "due": i["due"][11:16], "date": i["due"][8:10] + "/" + i["due"][5:7]},
+                                   **({"repeats": self.REPEATS.get(i["repeat"], "")} if i.get("repeat") else {}),
+                                   **({"kind": "scheduled task for Gili"} if i.get("task") else {}))
                               for i in sorted(self.items, key=lambda x: x["due"])]}
 
     def cancel(self, contains=""):
         with self.lock:
             before = len(self.items)
-            self.items = [i for i in self.items if contains and contains not in i["text"]]
+            self.items = [i for i in self.items
+                          if contains and contains not in i["text"] and contains not in (i.get("task") or "")]
             self._save()
         return {"ok": True, "cancelled": before - len(self.items)}
 
     def _loop(self):
         while True:
             time.sleep(10)
-            now = datetime.now().isoformat(timespec="seconds")
+            now_dt = datetime.now()
+            now = now_dt.isoformat(timespec="seconds")
             with self.lock:
                 due = [i for i in self.items if i["due"] <= now]
                 if due:
-                    self.items = [i for i in self.items if i["due"] > now]
+                    keep = [i for i in self.items if i["due"] > now]
+                    for i in due:
+                        if i.get("repeat") in self.REPEATS:            # comes back; if the PC was off, skip missed days
+                            nxt = self._next(datetime.fromisoformat(i["due"]), i["repeat"])
+                            while nxt <= now_dt:
+                                nxt = self._next(nxt, i["repeat"])
+                            keep.append(dict(i, due=nxt.isoformat(timespec="seconds")))
+                    self.items = keep
                     self._save()
             for i in due:
-                self.events.put({"text": f"{CFG['user_name']}, תזכורת: {i['text']}", "notify": f"⏰ תזכורת: {i['text']}"})
+                if i.get("task"):
+                    self.events.put({"task": i["task"], "label": i["text"]})
+                else:
+                    self.events.put({"text": f"{CFG['user_name']}, תזכורת: {i['text']}", "notify": f"⏰ תזכורת: {i['text']}"})
+
+
+# ======================================================================= LISTS (shopping, to-do, anything)
+LISTS_FILE = DATA_DIR / "lists.json"
+
+
+class Lists:
+    def __init__(self):
+        self.lock = threading.Lock()
+        try:
+            raw = json.loads(LISTS_FILE.read_text(encoding="utf-8"))
+            self.data = {str(k): [str(x) for x in v] for k, v in raw.items() if isinstance(v, list)}
+        except Exception:
+            self.data = {}
+
+    def key(self, name):
+        n = " ".join((name or "").split())
+        n = re.sub(r"^(רשימת|רשימה של|רשימה)\s+", "", n).strip()
+        if n.startswith("ה") and len(n) > 3 and n not in self.data:     # "הקניות" and "קניות" are the same list
+            if n[1:] in self.data or n[1:] in ("קניות", "משימות", "מטלות", "רעיונות", "סופר"):
+                n = n[1:]
+        return n or "קניות"
+
+    def _save(self):
+        tmp = LISTS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, LISTS_FILE)
+
+    def edit(self, name, add=None, remove=None, clear=False):
+        k = self.key(name)
+        with self.lock:
+            items = list(self.data.get(k, []))
+            removed = []
+            if clear:
+                removed, items = items, []
+            for r in remove or []:
+                r = str(r).strip()
+                hit = [x for x in items if r and (r == x or r in x or x in r)]
+                removed += hit
+                items = [x for x in items if x not in hit]
+            added = []
+            for x in add or []:
+                x = " ".join(str(x).split())[:120]
+                if x and x not in items:
+                    items.append(x)
+                    added.append(x)
+            if items:
+                self.data[k] = items[:200]
+            else:
+                self.data.pop(k, None)
+            self._save()
+        return {"ok": True, "list": k, "added": added, "removed": removed, "items": items}
+
+    def show(self, name=""):
+        if not (name or "").strip():
+            return {"ok": True, "lists": {k: v for k, v in self.data.items()} or "no lists yet"}
+        k = self.key(name)
+        return {"ok": True, "list": k, "items": self.data.get(k, [])}
+
+
+LISTS = Lists()
+
+
+# ======================================================================= SELECTED TEXT + DOCUMENTS
+def get_selection():
+    """The text the user has selected (marked) in whatever window is in front."""
+    import pyperclip
+    step_aside()
+    try:
+        old = pyperclip.paste()
+    except Exception:
+        old = ""
+    pyperclip.copy("")
+    _gui().hotkey("ctrl", "c")
+    sel = ""
+    for _ in range(8):
+        time.sleep(0.1)
+        sel = pyperclip.paste() or ""
+        if sel:
+            break
+    try:
+        pyperclip.copy(old)                            # leave the user's clipboard as it was
+    except Exception:
+        pass
+    if not sel.strip():
+        return {"ok": False, "error": "no text is selected - ask the user to mark the text first and try again"}
+    return {"ok": True, "text": sel[:3400], "cut": len(sel) > 3400, "chars": len(sel)}
+
+
+def replace_selection(text):
+    step_aside()
+    type_text(text)                                    # pasting over a selection replaces it
+    return {"ok": True, "note": "the selected text was replaced; the user can press ctrl+z to undo"}
+
+
+def _docx_text(path):
+    import zipfile, html as _html
+    with zipfile.ZipFile(path) as z:
+        xml = z.read("word/document.xml").decode("utf-8", errors="replace")
+    paras = []
+    for para in re.findall(r"<w:p[ >].*?</w:p>", xml, flags=re.S):
+        t = "".join(re.findall(r"<w:t(?: [^>]*)?>(.*?)</w:t>", para, flags=re.S))
+        if t.strip():
+            paras.append(_html.unescape(t))
+    return "\n".join(paras)
+
+
+def _xlsx_text(path):
+    import zipfile, html as _html
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        shared = []
+        if "xl/sharedStrings.xml" in names:
+            sx = z.read("xl/sharedStrings.xml").decode("utf-8", errors="replace")
+            shared = [_html.unescape("".join(re.findall(r"<t(?: [^>]*)?>(.*?)</t>", si, flags=re.S)))
+                      for si in re.findall(r"<si>.*?</si>", sx, flags=re.S)]
+        rows = []
+        for sheet in sorted(n for n in names if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", n))[:3]:
+            x = z.read(sheet).decode("utf-8", errors="replace")
+            for row in re.findall(r"<row[ >].*?</row>", x, flags=re.S):
+                cells = []
+                for attrs, val in re.findall(r"<c ([^>]*)>.*?<v>(.*?)</v>", row, flags=re.S):
+                    cells.append(shared[int(val)] if 't="s"' in attrs and val.isdigit() and int(val) < len(shared) else val)
+                if cells:
+                    rows.append(" | ".join(cells))
+    return "\n".join(rows)
+
+
+DOC_PART = 3300
+
+
+def read_document(what="latest_download", part=1):
+    """Text of a file on the PC (PDF, Word, Excel, text) so Gili can sum it up or answer questions about it."""
+    p = resolve_file(what)
+    if not p:
+        return {"ok": False, "error": "לא מצאתי את הקובץ"}
+    ext = p.suffix.lower()
+    if p.stat().st_size > 60 * 1024 * 1024:
+        return {"ok": False, "error": "הקובץ גדול מדי"}
+    pages = None
+    if ext == ".pdf":
+        from pypdf import PdfReader
+        r = PdfReader(str(p))
+        pages = len(r.pages)
+        text = "\n".join((pg.extract_text() or "") for pg in r.pages[:80])
+        if len(text.strip()) < 30:
+            return {"ok": False, "file": p.name, "error": "this PDF is a scan (pictures, no text). Open it and use look_at_screen instead."}
+    elif ext == ".docx":
+        text = _docx_text(p)
+    elif ext == ".xlsx":
+        text = _xlsx_text(p)
+    elif ext in (".txt", ".md", ".csv", ".json", ".log", ".py", ".js", ".html", ".htm", ".xml", ".ini", ".srt", ".rtf", ""):
+        raw = p.read_bytes()[:2_000_000]
+        encs = ("utf-16",) if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else ("utf-8-sig", "cp1255", "latin-1")
+        for enc in encs + ("latin-1",):
+            try:
+                text = raw.decode(enc)
+                break
+            except Exception:
+                continue
+        if ext in (".html", ".htm"):
+            import html as _html
+            text = _html.unescape(re.sub(r"(?is)<(script|style).*?</\1>|<[^>]+>", " ", text))
+    else:
+        return {"ok": False, "file": p.name, "error": f"I can't read {ext} files (only PDF, Word .docx, Excel .xlsx and text files)"}
+    text = re.sub(r"[ \t]+", " ", re.sub(r"\n\s*\n+", "\n", text)).strip()
+    parts = max(1, -(-len(text) // DOC_PART))
+    part = max(1, min(parts, int(part or 1)))
+    out = {"ok": True, "file": p.name, "part": part, "of": parts, "text": text[(part - 1) * DOC_PART: part * DOC_PART]}
+    if pages:
+        out["pages"] = pages
+    if parts > part:
+        out["note"] = f"this is part {part} of {parts}; call again with part={part + 1} to keep reading"
+    return out
 
 
 # ======================================================================= EMAIL (IMAP)
@@ -3084,7 +3307,7 @@ class Timers:
 # ======================================================================= SCREEN CONTROL (Gili works the PC herself)
 AGENT_STOP = threading.Event()          # the stop button: a running task ends at its next step
 GUI_TOOLS = {"screen_elements", "click_element", "read_window_text", "look_at_screen", "scroll", "press_keys",
-             "type_text", "wait"}
+             "type_text", "wait", "get_selection", "replace_selection"}
 _ELEMENTS = {}                          # numbers from the last screen_elements call -> where to click
 _UIA_POOL = None
 _STEPPED_ASIDE = False
@@ -3639,8 +3862,10 @@ TOOLS += [
        {"ids": {"type": "array", "items": {"type": "integer"}}, "contains": S, "everything": {"type": "boolean"}}),
     _t("list_memory", "Everything you remember about the user (numbered)."),
     _t("check_email", "Read the user's new unread emails (sender, subject, preview) - for 'do I have new mail?' or 'what did X write?'. Summarize briefly in Hebrew.", {"limit": {"type": "number"}}),
-    _t("set_reminder", "Set a reminder the user asked for. Give minutes from now OR a clock time 'HH:MM'. It is spoken on the PC and shown as a notification on the PC and in the iPhone app.",
-       {"text": S, "minutes": {"type": "number"}, "at": S}, ["text"]),
+    _t("set_reminder", "Set a reminder the user asked for. Give minutes from now, OR a clock time at='HH:MM' (today, or tomorrow if that time has passed), optionally with date='YYYY-MM-DD' / 'tomorrow' for another day (work the date out from the context line). repeat makes it come back: daily, weekdays (Sunday-Thursday) or weekly. It is spoken on the PC and shown as a notification on the PC and in the iPhone app.",
+       {"text": S, "minutes": {"type": "number"}, "at": S, "date": S, "repeat": {"type": "string", "enum": ["daily", "weekdays", "weekly"]}}, ["text"]),
+    _t("schedule_task", "Schedule something for YOU to do by yourself later or regularly, when the user asks for it ('כל בוקר בשמונה תשלחי לי את המכירות של אתמול', 'ביום חמישי בחמש תבדקי אם יש מייל מדני'). At that time you will receive `task` as an instruction, carry it out with your tools, and the result is sent silently to the iPhone app (never spoken). task = a full, self-contained instruction in Hebrew; label = 2-4 words naming it.",
+       {"task": S, "label": S, "at": S, "date": S, "minutes": {"type": "number"}, "repeat": {"type": "string", "enum": ["daily", "weekdays", "weekly"]}}, ["task", "label"]),
     _t("list_reminders", "List the user's upcoming reminders."),
     _t("cancel_reminders", "Cancel reminders whose text contains the given words (empty = cancel all).", {"contains": S}),
     _t("web_search", "Search the internet. Use for news, facts, prices, sports, people, anything current. Returns titles, snippets and URLs.", {"query": S}, ["query"]),
@@ -3663,6 +3888,13 @@ TOOLS += [
 ]
 
 TOOLS += [
+    _t("list_edit", "The user's own lists (shopping, to-do, ideas, packing - any name). Add and/or remove items, or clear the list. 'תוסיפי חלב וביצים לרשימת הקניות' -> list='קניות', add=['חלב','ביצים']. 'קניתי חלב' / 'תורידי את החלב' -> remove. Returns the list after the change.",
+       {"list": S, "add": {"type": "array", "items": S}, "remove": {"type": "array", "items": S}, "clear": {"type": "boolean"}}, ["list"]),
+    _t("list_show", "Read one of the user's lists (or, with no name, all of them).", {"list": S}),
+    _t("get_selection", "Get the text the user has SELECTED (marked) right now in any program. Use for 'תתקני / תשפרי / תקצרי / תתרגמי / תסבירי / תסכמי את מה שסימנתי' (or 'את זה' when it clearly means marked text)."),
+    _t("replace_selection", "Replace the user's selected text with new text (after get_selection). Use when they asked to fix, improve, shorten, translate or rewrite the marked text in place. Keep the original language unless asked to translate, and return only the final text - no quotes or explanations.", {"text": S}, ["text"]),
+    _t("read_document", "Read a file from the PC so you can sum it up or answer questions about it: PDF, Word (.docx), Excel (.xlsx) or text. what = 'latest_download' (newest file in Downloads), part of a file name, or a full path. Long files come in parts.",
+       {"what": S, "part": {"type": "integer"}}, ["what"]),
     _t("screen_elements", "SCREEN CONTROL step 1: list everything that can be clicked or typed into in the window that is in front right now (buttons, links, text boxes, menus, tabs...), each with a number. Optional filter = part of a name, to find one thing in a busy window. Call it again after every click - the numbers change.", {"filter": S}),
     _t("click_element", "SCREEN CONTROL step 2: click an element by its number from the latest screen_elements list. To fill a text box: click it, then call type_text.",
        {"id": {"type": "integer"}, "double": {"type": "boolean"}, "right": {"type": "boolean"}}, ["id"]),
@@ -3673,6 +3905,8 @@ TOOLS += [
 ]
 
 ACTION_LABELS = {
+    "list_edit": "מעדכנת רשימה: {list}", "list_show": "קוראת רשימה", "get_selection": "קוראת את הטקסט המסומן",
+    "replace_selection": "מחליפה את הטקסט המסומן", "read_document": "קוראת קובץ: {what}", "schedule_task": "מתזמנת: {label}",
     "screen_elements": "סורקת את המסך", "click_element": "לוחצת על המסך", "read_window_text": "קוראת את החלון",
     "look_at_screen": "מסתכלת על המסך", "scroll": "גוללת", "wait": "ממתינה רגע",
     "open_app": "פותח: {name}", "close_app": "סוגר: {name}", "list_open_apps": "סורק חלונות פתוחים",
@@ -3733,6 +3967,10 @@ What you remember about the user (numbered; this is YOUR long-term memory - use 
 
 LANGUAGE: The user speaks Hebrew. ALWAYS reply in natural, fluent, spoken modern Israeli Hebrew (never English, never translated-sounding). GRAMMAR (strict): speak about YOURSELF in {"FEMININE" if speaks_as_female() else "MASCULINE"} form ({"אני מוכנה, פתחתי, הבנתי, אני שמחה, אני יכולה" if speaks_as_female() else "אני מוכן, פתחתי, הבנתי, אני שמח, אני יכול"}), and address the USER in {"MASCULINE" if CFG.get("user_gender", "male") == "male" else "FEMININE"} form ({"אתה, תרצה, שמעת, לשירותך" if CFG.get("user_gender", "male") == "male" else "את, תרצי, שמעת, לשירותך"}). Never mix these up - check every verb and adjective about yourself before answering. SPELLING: perfect standard modern Hebrew spelling (כתיב מלא תקני: "עכשיו", "שאלה", "מצוין", "בדיוק"), no typos, no invented words, no English words or Latin letters unless it's a name (Fortnite, Chrome); write short clear sentences that sound good read aloud. Call the user "{CFG['user_name']}" now and then.
 
+CONTEXT LINE: every message from the user begins with a line in [square brackets] that the system adds by itself: today's day and date, the time, the window the user is working in on the PC, and whether the message came from the iPhone. Use it silently to understand what "זה", "פה", "היום", "מחר", "ביום חמישי" mean and to work out dates. Never read it aloud, quote it or mention that it exists. You don't need get_datetime for the current time or date - it is right there.
+
+HOW TO THINK: before answering, work out what the user actually wants to achieve, not just the literal words - then do the whole thing. Resolve "זה / אותו / שם / ההוא" from the conversation and the context line. If you don't know a fact, look it up (web_search) or say honestly that you're not sure - never guess or invent names, numbers, prices or times. If a tool fails, try another way before giving up. After finishing, if there is one obviously useful next step, offer it in a few words ("רוצה שאוסיף את זה ליומן?") - only offer, never do it unasked.
+
 Rules:
 - Your replies are read aloud by a Hebrew voice. Keep them short (usually one or two sentences). No markdown, lists, emojis, URLs or citations. Write numbers as digits.
 - Act only on what the user asks - but do ALL of it. For a complex or multi-step request, plan the steps and carry them out one after another with as many tool calls as needed (e.g. open an app, wait, type, search, send a file...), check results, fix failures yourself (try another name or another way), and only then report in one short sentence. Don't do unrelated things on your own. If a request is truly ambiguous, ask one short question in Hebrew.
@@ -3743,9 +3981,15 @@ Rules:
 - You DO have internet access through web_search, read_webpage and get_weather. For anything current (news, weather, prices, sports, people, opening hours...) use them and answer in your own words in Hebrew. Never say you can't access the internet. Default weather location: the user's location (leave city empty) unless they name a place.
 - For the current time or date, call get_datetime.
 - Music/videos: when the user wants to hear or watch something ("תנגן", "תשים", "אני רוצה לשמוע"), call play_youtube - it starts playing. Then say briefly what is playing.
-- MEMORY (important): "תזכור ש..." / "תרשום לך" / "אל תשכח" -> call remember, then confirm in a few words ("רשמתי לי."). A correction ("לא, עכשיו אני בן 16", "עברתי דירה") -> update_memory on the old fact's number. "תשכח את..." / "תמחק מהזיכרון" / "זה כבר לא נכון" -> forget with the numbers of every matching fact, then confirm what you forgot. "תשכח הכל" -> first ask "למחוק את כל מה שאני זוכר עליך?" and only after a clear yes call forget with everything=true. "מה אתה זוכר עליי?" -> answer from the list in natural Hebrew. Never invent memories.
+- MEMORY - LEARN BY YOURSELF: when the user tells you, even in passing, a lasting fact about himself or his world that will help you later (names of family, friends, clients and what they are to him; his work and projects; where he lives; birthdays; tastes and habits; how he likes things done), call remember quietly in the same turn and just carry on with the answer - don't announce it. Only lasting facts: not today's mood, one-off tasks or anything already in your memory. Never save passwords, card or ID numbers, or health details.
+- MEMORY (when asked): "תזכור ש..." / "תרשום לך" / "אל תשכח" -> call remember, then confirm in a few words ("רשמתי לי."). A correction ("לא, עכשיו אני בן 16", "עברתי דירה") -> update_memory on the old fact's number. "תשכח את..." / "תמחק מהזיכרון" / "זה כבר לא נכון" -> forget with the numbers of every matching fact, then confirm what you forgot. "תשכח הכל" -> first ask "למחוק את כל מה שאני זוכר עליך?" and only after a clear yes call forget with everything=true. "מה אתה זוכר עליי?" -> answer from the list in natural Hebrew. Never invent memories.
 - Anything Google or web (Google search, YouTube, Gmail, Google Maps, Drive, Translate, any site) opens in Google Chrome: use google_search / youtube_search / open_website (e.g. Gmail -> https://mail.google.com, Maps -> https://www.google.com/maps/search/<place>). Don't open another browser.
-- Reminders: set_reminder (only when asked). You have no WhatsApp or SMS access.
+- Reminders: set_reminder (only when asked) - also for another day (date) and repeating ones (repeat). You have no WhatsApp or SMS access.
+- Things to do later or regularly by yourself ("כל בוקר תשלחי לי...", "מחר בשמונה תבדקי...") -> schedule_task. Its result goes to the iPhone, not spoken. list_reminders shows these too; cancel_reminders cancels them.
+- Lists: list_edit / list_show for shopping lists, to-do lists and any other list ("תוסיפי לרשימת הקניות", "מה נשאר לי ברשימת המשימות", "קניתי את החלב"). Read a list aloud as one flowing sentence.
+- Marked text: "תתקני / תשפרי / תקצרי / תתרגמי את מה שסימנתי" -> get_selection, write the new text yourself, replace_selection, then confirm in a few words. "תסבירי / תסכמי את מה שסימנתי" -> get_selection and answer aloud without replacing.
+- Files: "תסכמי לי את הקובץ שהורדתי", "מה כתוב בחוזה" -> read_document, then answer in your own words. For a long file read the parts you need.
+- When the message came from the iPhone, the user is probably away from the PC: put anything he needs to see in the answer itself or send it with send_to_phone / copy_to_phone, rather than only opening it on the PC screen.
 - Good morning / briefing: call morning_brief, then speak a short natural briefing (3-5 sentences): greeting, weather, today's reminders, and only the important new emails. Don't read addresses.
 - Email: when asked about mail, give ONE short sentence per email, important ones first, at most 5; say how many others there are. You can only read mail, not send or delete.
 - Phone: send_to_phone sends files/screenshots to the iPhone app; copy_to_phone sends text/clipboard. Routines: run_routine / save_routine / list_routines.
@@ -3807,7 +4051,14 @@ class Brain:
             "remember": lambda: MEMORY.remember(a["fact"]),  # noqa
             "forget": lambda: MEMORY.forget(a.get("ids"), a.get("contains", ""), bool(a.get("everything"))),
             "update_memory": lambda: MEMORY.update(a["id"], a["fact"]), "list_memory": MEMORY.listing,
-            "set_reminder": lambda: REMINDERS.add(a["text"], a.get("minutes"), a.get("at")),
+            "set_reminder": lambda: REMINDERS.add(a["text"], a.get("minutes"), a.get("at"), date=a.get("date"),
+                                                  repeat=a.get("repeat")),
+            "schedule_task": lambda: REMINDERS.add(a.get("label") or a["task"][:40], a.get("minutes"), a.get("at"),
+                                                   date=a.get("date"), repeat=a.get("repeat"), task=a["task"]),
+            "list_edit": lambda: LISTS.edit(a.get("list", ""), a.get("add"), a.get("remove"), bool(a.get("clear"))),
+            "list_show": lambda: LISTS.show(a.get("list", "")),
+            "get_selection": get_selection, "replace_selection": lambda: replace_selection(a["text"]),
+            "read_document": lambda: read_document(a.get("what", "latest_download"), a.get("part", 1)),
             "list_reminders": lambda: REMINDERS.list(),
             "cancel_reminders": lambda: REMINDERS.cancel(a.get("contains", "")),
             "get_weather": lambda: get_weather(a.get("city", "")),
@@ -3974,7 +4225,7 @@ class GroqBrain:
             raise
 
 
-GroqBrain.DEFAULT_MODELS = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"]
+GroqBrain.DEFAULT_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"]
 
 
 class BasicBrain:
@@ -4174,9 +4425,70 @@ class Assistant:
                 log.warning(f"open signal: {e}")
             time.sleep(0.5)
 
-    def ask_brain(self, text):
+    def context_line(self, source="pc"):
+        """One line of facts the brain gets with every message, so it knows the time and what the user is looking at."""
+        n = datetime.now()
+        parts = [f"יום {HE_DAYS[n.weekday()]} {n.day}.{n.month}.{n.year}", f"השעה {n:%H:%M}"]
+        if source == "phone":
+            parts.append("ההודעה נשלחה מהאייפון")
+        elif source == "task":
+            parts.append("משימה מתוזמנת - המשתמש לא בהכרח ליד המחשב")
+        win = getattr(self, "last_window", "")
+        if win:
+            parts.append("החלון הפעיל במחשב: " + win[:90])
+        if MEETING.on:
+            parts.append("מקשיבה כרגע לפגישה")
+        return "[" + " | ".join(parts) + "]"
+
+    def run_task(self, ev):
+        """A task the user scheduled ahead of time: do it quietly and send the result to the iPhone."""
+        label = ev.get("label") or "משימה"
+        try:
+            ui.action(f"🗓 משימה מתוזמנת: {label}")
+            with self.brain_lock:
+                ans = self.ask_brain("זו משימה שביקשתי ממך מראש לבצע עכשיו בעצמך. בצעי אותה וכתבי לי את התוצאה בקצרה "
+                                     "(היא נשלחת לטלפון שלי ולא מוקראת בקול):\n" + ev["task"], source="task")
+            step_back()
+            ans = strip_niqqud(re.sub(r"\[[^\]]*\]|[*#_`>]", "", ans or "")).strip()
+        except Exception as e:
+            log.exception("scheduled task")
+            ans = f"לא הצלחתי לבצע את המשימה ({str(e)[:80]})."
+        notify(f"🗓 {label}\n{ans}", "G.I.L.I - " + label)
+        ui.say("jarvis", f"🗓 {label}: {ans}")
+
+    def dictate(self):
+        """'מצב הכתבה': everything the user says is typed where the cursor is, until 'סוף הכתבה'."""
+        if not self.ears or threading.current_thread() is not getattr(self, "_main_thread", None):
+            return "הכתבה אפשר להפעיל רק בקול, ליד המחשב."
+        self.speaker.say("מקלידה את מה שתגיד. לשורה חדשה תגיד שורה חדשה, ולסיום תגיד סוף הכתבה.")
+        step_aside()
+        quiet, words = 0, 0
+        while quiet < 2 and not AGENT_STOP.is_set():
+            q = self.ears.listen(start_timeout=15)
+            if not q:
+                quiet += 1
+                continue
+            quiet = 0
+            q = strip_niqqud(q).strip()
+            if re.search(r"(סוף|סיום|סיימתי את|עצרי את|תפסיקי את|תפסיק את) ?ה?הכתבה|^סיימתי$", q):
+                break
+            if re.fullmatch(r"(שורה חדשה|רד שורה|רדי שורה|אנטר)[.!?]?", q):
+                _gui().press("enter")
+                continue
+            if re.fullmatch(r"(מחקי|תמחקי|מחק|תמחק) (את זה|את המשפט|אחורה)[.!?]?", q):
+                _gui().hotkey("ctrl", "z")
+                continue
+            type_text(q + " ")
+            words += len(q.split())
+            ui.action(f"✍ {q[:60]}")
+        step_back()
+        return f"סיימתי את ההכתבה, הקלדתי {words} מילים." if words else "לא שמעתי מה להקליד, אז יצאתי ממצב הכתבה."
+
+    def ask_brain(self, text, source="pc"):
         """Ask the chosen brain; if it fails (limit, outage), quietly try the other one if it's set up."""
         AGENT_STOP.clear()
+        if not isinstance(self.brain, BasicBrain):
+            text = self.context_line(source) + "\n" + text
         try:
             return fix_gender(self.brain.ask(text))
         except Exception as e:
@@ -4233,6 +4545,10 @@ class Assistant:
                 b = psutil.sensors_battery()
                 ui.status({"cpu": psutil.cpu_percent(interval=None), "ram": psutil.virtual_memory().percent,
                            "battery": None if not b else round(b.percent)})
+                if OS == "Windows":                    # remember what the user is working in (not Gili's own window)
+                    title = _fg_window()[1].strip()
+                    if title and title != "G.I.L.I":
+                        self.last_window = title
             except Exception:
                 pass
             time.sleep(2)
@@ -4242,6 +4558,9 @@ class Assistant:
             ev = self.timers.events.get()
             if isinstance(ev, str):
                 ev = {"text": ev}
+            if ev.get("task"):                         # something she was asked to do by herself at this time
+                threading.Thread(target=self.run_task, args=(ev,), daemon=True).start()
+                continue
             if ev.get("notify"):
                 notify(ev["notify"])
             popped = not getattr(ui, "visible", True) and ui.show_window()
@@ -4257,14 +4576,14 @@ class Assistant:
         s = text.strip().rstrip(".!?,").replace("׳", "'").replace("’", "'").replace("`", "'")
         s = re.sub(r"^(היי |הי |הֵיי )?ג'?ארוויס[, ]*|^(היי |הי )?ג'רוויס[, ]*|^(היי |הי )?גילי[, ]*", "", s)
         s = re.sub(r"^(בבקשה |תוכל |אתה יכול |תעשה לי טובה )", "", s).replace(" בבקשה", "").strip()
-        if re.search(r"(תתעדכן|תעדכן את עצמך|עדכן את עצמך|תבדוק עדכונים|בדוק עדכונים|תתקין עדכון)", s):
-            ui.action("בודק עדכונים")
+        if re.search(r"(תתעדכ[ןנ]|תעדכני? את עצמך|עדכני? את עצמך|תבדקי עדכונים|תבדוק עדכונים|בדוק עדכונים|בדקי עדכונים|תתקיני? עדכון)", s):
+            ui.action("בודקת עדכונים")
             r = do_update()
             if not r.get("ok"):
                 return f"לא הצלחתי להגיע לשרת העדכונים, {u}."
             if not r.get("updated"):
                 return f"אני כבר בגרסה העדכנית ביותר, {u}."
-            self.speaker.say(f"מתקין את גרסה {r['version']}. אחזור בעוד רגע.")
+            self.speaker.say(f"מתקינה את גרסה {r['version']}. אחזור בעוד רגע.")
             restart_jarvis(r.get("installer", False))
 
         if re.search(r"(תקשיבי|תקשיב|תאזיני|תאזין|תתעדי|תתעד|תקליטי|תקליט)\s+(לנו\s+|לי\s+)?(ל|את ה)(פגישה|שיחה|ישיבה)(\s+(הזאת|הזו|שלנו|שלי))?$|^מצב פגישה$", s):
@@ -4286,13 +4605,15 @@ class Assistant:
             save_config()
             return f"ביטלתי את נעילת הקול. עכשיו אני מקשיבה לכולם, {u}."
 
-        if re.fullmatch(r"(תעתיק|העתק|תשלח) (את זה |את הטקסט )?(לטלפון|לאייפון)", s):
+        if re.fullmatch(r"(מצב הכתבה|הכתבה|(תתחילי|תתחיל|תפעילי|תפעיל) (מצב )?הכתבה|(תכתבי|תכתוב|תקלידי|תקליד) (את )?מה שאני אומר)", s):
+            return self.dictate()
+        if re.fullmatch(r"(תעתיקי?|העתיקי|העתק|תשלחי?|שלחי) (את זה |את הטקסט )?(לטלפון|לאייפון)", s):
             r = copy_to_phone("")
             return f"שלחתי לטלפון, {u}." if r.get("ok") else r["error"]
-        if re.fullmatch(r"(תבטל|בטל|תעצור|עצור) (את ה)?כיבוי( המחשב)?", s):
+        if re.fullmatch(r"(תבטלי?|בטלי?|תעצרי|תעצור|עצרי|עצור) (את ה)?כיבוי( המחשב)?", s):
             power("cancel")
             return f"ביטלתי את הכיבוי, {u}."
-        m = re.match(r"^(?:תפעיל|הפעל|תריץ)\s+(?:את\s+)?(?:ה?שגרה\s+)?(.+)$", s)
+        m = re.match(r"^(?:תפעילי?|הפעילי|הפעל|תריצי?)\s+(?:את\s+)?(?:ה?שגרה\s+)?(.+)$", s)
         key = find_routine(m.group(1)) if m else (s if s in routines() else None)
         if key:
             r = run_routine(key)
@@ -4312,13 +4633,13 @@ class Assistant:
                 return n[1:]
             return n
 
-        m = re.match(r"^(תנגן|נגן|תנגני|תשמיע|השמע|תשים לי|שים לי|תפעיל לי את השיר|תפעיל את השיר)\s+(?:לי\s+)?(?:את\s+)?(?:השיר\s+)?(.+?)(?:\s+ביוטיוב)?$", s)
+        m = re.match(r"^(תנגני|תנגן|נגני|נגן|תשמיעי|תשמיע|השמיעי|השמע|תשימי לי|תשים לי|שימי לי|שים לי|תפעילי לי את השיר|תפעיל לי את השיר|תפעילי את השיר|תפעיל את השיר)\s+(?:לי\s+)?(?:את\s+)?(?:השיר\s+)?(.+?)(?:\s+ביוטיוב)?$", s)
         if m and len(m.group(2)) > 1:
             song = m.group(2)
-            ui.action(f"מנגן: {song}")
+            ui.action(f"מנגנת: {song}")
             r = play_youtube(song)
             if r.get("played"):
-                return f"מנגן: {r['title']}." if r.get("title") else f"מנגן, {u}."
+                return f"מנגנת: {r['title']}." if r.get("title") else f"מנגנת, {u}."
             return f"פתחתי לך תוצאות ביוטיוב עבור {song}."
         m = re.match(r"^(תסגור|סגור|תסגרי|סגרי|תצא מ|צא מ)\s*(.+)$", s)
         if m:
@@ -4326,24 +4647,24 @@ class Assistant:
             latin = re.fullmatch(r"[A-Za-z0-9 .+-]+", name) is not None
             if name in ("המחשב", "מחשב", "עצמך", "ג'רוויס", "גילי") or (name not in HE_APPS and not latin):
                 return None          # Claude handles (asks for confirmation / finds the window)
-            ui.action(f"סוגר: {name}")
+            ui.action(f"סוגרת: {name}")
             r = close_app(HE_APPS.get(name, name))
             if r.get("ok"):
                 return f"סגרתי את {name}, {u}."
             ui.action("✗ " + r["error"])
             return None
-        m = re.match(r"^(תפתח|פתח|תפתחי|פתחי|תפעיל|הפעל|תריץ|תעלה)\s+(.+)$", s)
+        m = re.match(r"^(תפתחי|תפתח|פתחי|פתח|תפעילי|תפעיל|הפעילי|הפעל|תריצי|תריץ|תעלי|תעלה)\s+(.+)$", s)
         if m and not re.search(r"( ואז |תיקי|קובץ|אתר )", " " + m.group(2) + " "):
             name = he_name(m.group(2))
             if name in HE_SITES:
-                ui.action(f"פותח אתר: {name}")
+                ui.action(f"פותחת אתר: {name}")
                 open_website(HE_SITES[name])
-                return f"פותח את {name}, {u}."
+                return f"פותחת את {name}, {u}."
             if name in HE_APPS or re.fullmatch(r"[A-Za-z0-9 .+-]+", name):
-                ui.action(f"פותח: {name}")
+                ui.action(f"פותחת: {name}")
                 r = open_app(HE_APPS.get(name, name))
                 if r.get("ok"):
-                    return f"פותח את {name}, {u}."
+                    return f"פותחת את {name}, {u}."
                 ui.action("✗ " + r["error"])
             return None
         return None
@@ -4358,7 +4679,7 @@ class Assistant:
             except Exception:
                 log.exception("quick (phone)")
             if ans is None:
-                ans = self.ask_brain(text)
+                ans = self.ask_brain(text, source="phone")
         step_back()
         import re as _re
         ans = strip_niqqud(_re.sub(r"\[[^\]]*\]|[*#_`>]", "", ans or "")).strip()
@@ -5143,6 +5464,13 @@ def selftest():
         e = VOICE.embed((np.random.default_rng(1).normal(0, 3000, SAMPLE_RATE * 2)).astype(np.int16))
         assert e is not None and e.shape == (256,) and abs(float(np.linalg.norm(e)) - 1) < 1e-3, getattr(e, "shape", e)
     step("voice lock model", spk)
+    def docs():
+        import pypdf, zipfile, tempfile
+        d = Path(tempfile.mkdtemp())
+        with zipfile.ZipFile(d / "t.docx", "w") as z:
+            z.writestr("word/document.xml", '<w:document><w:body><w:p><w:r><w:t>שלום עולם</w:t></w:r></w:p></w:body></w:document>')
+        assert read_document(str(d / "t.docx"))["text"] == "שלום עולם"
+    step("read documents (pdf / docx)", docs)
     if OS == "Windows":
         def uia():
             title, items, text = uia_call(lambda: _uia_scan(root=True), 60)

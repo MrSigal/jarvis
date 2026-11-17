@@ -11,6 +11,7 @@ pygame
 psutil
 pyautogui
 pyperclip
+pypdf
 uiautomation
 comtypes
 ddgs
