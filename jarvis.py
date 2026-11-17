@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "8.0"
+VERSION = "8.1"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -1766,28 +1766,108 @@ def close_all_apps():
     return {"ok": True, "closed": sorted(set(closed))}
 
 
+def monitor_off():
+    import ctypes
+    ctypes.windll.user32.PostMessageW(0xFFFF, 0x0112, 0xF170, 2)      # WM_SYSCOMMAND / SC_MONITORPOWER / off
+    return {"ok": True}
+
+
+PHONE_KEY_NAMES = {"up", "down", "left", "right", "enter", "esc", "space", "backspace", "tab", "delete", "home", "end",
+                   "pageup", "pagedown", "ctrl", "alt", "shift", "win", "=", "-", "printscreen", "insert"} | \
+    {f"f{i}" for i in range(1, 13)} | set("abcdefghijklmnopqrstuvwxyz0123456789")
+
+
 def phone_command(cmd):
     """Buttons in the iPhone app. Returns a short Hebrew confirmation."""
-    u = CFG["user_name"]
+    cmd = (cmd or "").strip()
+    name, _, arg = cmd.partition(":")
+    arg = arg.strip()
+    if name == "key":                                   # a key or shortcut pressed on the PC: key:ctrl+w
+        parts = [k for k in arg.lower().split("+") if k]
+        if not parts or len(parts) > 4 or any(k not in PHONE_KEY_NAMES for k in parts):
+            return "מקש לא מוכר."
+        step_aside()
+        press_keys("+".join(parts))
+        return "✓ " + "+".join(parts)
+    if name == "vol":
+        level = max(0, min(100, int(float(arg or 0))))
+        set_volume(level)
+        return f"עוצמת הקול: {level}."
+    if name == "open":
+        if not arg or len(arg) > 200:
+            return "לא ברור מה לפתוח."
+        ui.action(f"📱 פותחת: {arg}")
+        if arg in HE_SITES:
+            open_website(HE_SITES[arg])
+        elif re.match(r"^https?://", arg):
+            open_website(arg)
+        else:
+            r = open_app(HE_APPS.get(arg, arg))
+            if not r.get("ok"):
+                return f"לא הצלחתי לפתוח את {arg}."
+        return f"פתחתי את {arg}."
+    if name == "status":
+        i = system_info()
+        bat = i.get("battery")
+        txt = f"מעבד {i['cpu_percent']:.0f}%, זיכרון {i['ram_percent']:.0f}%, דיסק {i['disk_percent']:.0f}% מלא"
+        if bat:
+            txt += f", סוללה {bat['percent']:.0f}%" + (" (בטעינה)" if bat.get("plugged_in") else "")
+        return txt + f". גילי {VERSION}."
+    if name == "stop":
+        AGENT_STOP.set()
+        try:
+            assistant.speaker.stop()
+        except Exception:
+            pass
+        ui.action("📱 עצירה")
+        return "עצרתי."
     acts = {
         "lock": (lambda: power("lock"), "נעלתי את המחשב."),
         "sleep": (lambda: power("sleep"), "המחשב נכנס למצב שינה."),
         "shutdown": (lambda: subprocess.Popen("shutdown /s /t 60", shell=True),
                      "המחשב ייכבה בעוד דקה. אפשר לבטל עם הכפתור 'בטל כיבוי'."),
+        "restart": (lambda: subprocess.Popen("shutdown /r /t 60", shell=True),
+                    "המחשב יופעל מחדש בעוד דקה. אפשר לבטל עם הכפתור 'בטל כיבוי'."),
         "cancel_shutdown": (lambda: power("cancel"), "ביטלתי את הכיבוי."),
+        "monitor_off": (monitor_off, "כיביתי את המסך. הוא יידלק כשמזיזים את העכבר."),
         "mute": (lambda: media_control("mute"), "השתקתי / ביטלתי השתקה."),
         "vol_up": (lambda: media_control("volume_up"), "הגברתי."),
         "vol_down": (lambda: media_control("volume_down"), "הנמכתי."),
         "play_pause": (lambda: media_control("play_pause"), "בוצע."),
         "next": (lambda: media_control("next"), "השיר הבא."),
-        "desktop": (lambda: window_control("show_desktop"), "מציג את שולחן העבודה."),
+        "previous": (lambda: media_control("previous"), "השיר הקודם."),
+        "desktop": (lambda: window_control("show_desktop"), "מציגה את שולחן העבודה."),
+        "switch": (lambda: window_control("switch"), "עברתי לחלון הקודם."),
+        "close_window": (lambda: window_control("close_window"), "סגרתי את החלון."),
+        "minimize": (lambda: window_control("minimize"), "מזערתי את החלון."),
+        "maximize": (lambda: window_control("maximize"), "הגדלתי את החלון."),
+        "snap_left": (lambda: window_control("snap_left"), "הצמדתי לשמאל."),
+        "snap_right": (lambda: window_control("snap_right"), "הצמדתי לימין."),
+        "close_all": (close_all_apps, "ביקשתי מכל התוכנות להיסגר."),
+        "screenshot": (take_screenshot, "שמרתי צילום מסך בתיקיית התמונות, בתיקייה Jarvis."),
     }
     if cmd not in acts:
         return "פקודה לא מוכרת."
     fn, msg = acts[cmd]
     ui.action("📱 " + msg)
+    if cmd in ("switch", "close_window", "minimize", "maximize", "snap_left", "snap_right"):
+        step_aside()                                    # act on the user's window, not on Gili's own
     fn()
     return msg
+
+
+def type_from_phone(text, enter=False):
+    """Text written on the iPhone is typed where the cursor is on the PC."""
+    text = (text or "")[:5000]
+    if not text.strip():
+        return "אין טקסט להקליד."
+    step_aside()
+    type_text(text)
+    if enter:
+        time.sleep(0.15)
+        _gui().press("enter")
+    ui.action("📱 הוקלד טקסט מהטלפון")
+    return "הקלדתי במחשב."
 
 
 DEFAULT_ROUTINES = {
@@ -2816,6 +2896,12 @@ class PhoneLink:
         elif m.get("type") == "cmd":
             try:
                 text = phone_command(str(m.get("cmd", "")))
+            except Exception as e:
+                text = f"שגיאה: {e}"
+            self.reply({"type": "answer", "id": m.get("id"), "text": text, "quiet": True})
+        elif m.get("type") == "type":
+            try:
+                text = type_from_phone(str(m.get("text", "")), bool(m.get("enter")))
             except Exception as e:
                 text = f"שגיאה: {e}"
             self.reply({"type": "answer", "id": m.get("id"), "text": text, "quiet": True})

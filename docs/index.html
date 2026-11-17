@@ -48,10 +48,25 @@ form{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--cdim
 #panel{display:none;padding:8px 12px 2px;border-top:1px solid var(--cdim);background:rgba(1,10,18,.92)}
 #panel.open{display:block}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
-.pb{height:56px;border-radius:12px;border:1px solid var(--cdim);background:rgba(63,217,255,.07);color:var(--text);font:inherit;font-size:12.5px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.pb{height:56px;padding:0 2px;white-space:nowrap;overflow:hidden;border-radius:12px;border:1px solid var(--cdim);background:rgba(63,217,255,.07);color:var(--text);font:inherit;font-size:12.5px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
 .pb b{font-size:19px;font-weight:400;line-height:1}
 .pb:active{background:rgba(63,217,255,.25)}
 .pb.warn{border-color:rgba(255,79,94,.45)}
+#panel{max-height:48vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
+#tabs{display:flex;gap:6px;overflow-x:auto;padding:2px 0 8px;scrollbar-width:none}
+#tabs::-webkit-scrollbar{display:none}
+.tab{flex:0 0 auto;height:34px;padding:0 12px;border-radius:17px;border:1px solid var(--cdim);background:none;color:var(--muted);font:inherit;font-size:13.5px}
+.tab.on{border-color:var(--c);color:var(--c);background:rgba(63,217,255,.12)}
+[data-grid]{display:none}
+[data-grid=keys],[data-grid=media],[data-grid=web]{direction:ltr}
+.grid.on{display:grid} #volrow.on{display:flex}
+#volrow{align-items:center;gap:10px;padding:10px 4px 2px;direction:ltr}
+#volrow input{flex:1;accent-color:var(--c);height:28px}
+#volrow b{min-width:30px;text-align:center;color:var(--c);font-weight:500;font-size:14px}
+#flash{min-height:20px;padding-top:6px;text-align:center;font-size:13px;color:var(--c2);opacity:0;transition:opacity .25s}
+#flash.show{opacity:1} #flash.bad{color:var(--amber)}
+.pb.hit{background:rgba(63,217,255,.3);border-color:var(--c)}
+body.panel-open .core,body.panel-open #state,body.panel-open #install{display:none}
 #routines{display:flex;gap:7px;overflow-x:auto;padding:8px 0 6px}
 .chip{flex:0 0 auto;height:36px;padding:0 14px;border-radius:18px;border:1px solid var(--c);background:rgba(63,217,255,.1);color:var(--c);font:inherit;font-size:14px}
 .msg img{display:block;max-width:100%;border-radius:8px;margin-top:4px}
@@ -168,24 +183,140 @@ form{border-top:0;background:none;padding:10px 16px 16px;gap:10px}
 <div id="install">כדי להתקין: בספארי לוחצים על כפתור השיתוף <b>⬆︎</b> ובוחרים <b>"הוסף למסך הבית"</b>.</div>
 <div id="log"></div>
 <div id="panel">
-  <div class="grid">
+  <div id="tabs"><button class="tab" data-tab="main">⭐ ראשי</button><button class="tab" data-tab="media">🎵 מדיה</button><button class="tab" data-tab="keys">⌨️ מקלדת</button><button class="tab" data-tab="web">🌐 דפדפן</button><button class="tab" data-tab="pc">🖥 מחשב</button><button class="tab" data-tab="open">🚀 פתיחה</button><button class="tab" data-tab="gili">🤖 גילי</button></div>
+  <div class="grid" data-grid="main">
     <button class="pb" data-act="screen"><b>🖥</b>מה על המסך</button>
-    <button class="pb" data-act="upload"><b>📤</b>שלח קובץ</button>
-    <button class="pb" data-ask="תשלח לי לטלפון את הקובץ האחרון שהורדתי"><b>📥</b>הורדה אחרונה</button>
+    <button class="pb warn" data-cmd="stop"><b>⏹</b>עצרי</button>
     <button class="pb" data-cmd="lock"><b>🔒</b>נעל</button>
+    <button class="pb" data-cmd="play_pause"><b>⏯</b>נגן/עצור</button>
     <button class="pb" data-cmd="vol_down"><b>🔉</b>הנמך</button>
     <button class="pb" data-cmd="vol_up"><b>🔊</b>הגבר</button>
     <button class="pb" data-cmd="mute"><b>🔇</b>השתק</button>
-    <button class="pb" data-cmd="play_pause"><b>⏯</b>נגן/עצור</button>
-    <button class="pb" data-cmd="sleep"><b>😴</b>שינה</button>
-    <button class="pb warn" data-cmd="shutdown"><b>⏻</b>כבה</button>
-    <button class="pb" data-cmd="cancel_shutdown"><b>✋</b>בטל כיבוי</button>
     <button class="pb" data-ask="בוקר טוב"><b>☀️</b>תדריך</button>
     <button class="pb" data-act="clip_up"><b>📋</b>הדבק למחשב</button>
-    <button class="pb" data-act="clip_get"><b>📋</b>מהמחשב</button>
-    <button class="pb" data-ask="מה יש לי ביומן היום ומחר?"><b>📅</b>יומן</button>
-    <button class="pb" data-ask="מה המצב של יומן הגנן? כמה הורדות ורכישות היו השבוע?"><b>🌱</b>יומן הגנן</button>
+    <button class="pb" data-act="clip_get"><b>📑</b>העתק מהמחשב</button>
+    <button class="pb" data-act="upload"><b>📤</b>שלח קובץ</button>
+    <button class="pb" data-ask="תשלח לי לטלפון את הקובץ האחרון שהורדתי"><b>📥</b>הורדה אחרונה</button>
   </div>
+  <div class="grid" data-grid="media">
+    <button class="pb" data-cmd="previous"><b>⏮</b>הקודם</button>
+    <button class="pb" data-cmd="play_pause"><b>⏯</b>נגן/עצור</button>
+    <button class="pb" data-cmd="next"><b>⏭</b>הבא</button>
+    <button class="pb" data-cmd="mute"><b>🔇</b>השתק</button>
+    <button class="pb" data-key="left"><b>⏪</b>אחורה</button>
+    <button class="pb" data-key="space"><b>␣</b>רווח</button>
+    <button class="pb" data-key="right"><b>⏩</b>קדימה</button>
+    <button class="pb" data-key="f"><b>⛶</b>מסך מלא</button>
+    <button class="pb" data-cmd="vol_down"><b>🔉</b>הנמך</button>
+    <button class="pb" data-cmd="vol_up"><b>🔊</b>הגבר</button>
+    <button class="pb" data-key="up"><b>🔼</b>למעלה</button>
+    <button class="pb" data-key="down"><b>🔽</b>למטה</button>
+    <button class="pb" data-cmd="open:יוטיוב"><b>▶️</b>יוטיוב</button>
+    <button class="pb" data-cmd="open:ספוטיפיי"><b>🎧</b>ספוטיפיי</button>
+    <button class="pb" data-cmd="open:נטפליקס"><b>🎬</b>נטפליקס</button>
+    <button class="pb" data-key="esc"><b>✖</b>יציאה</button>
+  </div>
+  <div class="grid" data-grid="keys">
+    <button class="pb" data-key="esc"><b>⎋</b>Esc</button>
+    <button class="pb" data-key="up"><b>▲</b>למעלה</button>
+    <button class="pb" data-key="backspace"><b>⌫</b>מחק</button>
+    <button class="pb" data-key="delete"><b>⌦</b>Delete</button>
+    <button class="pb" data-key="left"><b>◀</b>שמאלה</button>
+    <button class="pb" data-key="enter"><b>⏎</b>Enter</button>
+    <button class="pb" data-key="right"><b>▶</b>ימינה</button>
+    <button class="pb" data-key="tab"><b>⇥</b>Tab</button>
+    <button class="pb" data-key="pageup"><b>⇞</b>דף למעלה</button>
+    <button class="pb" data-key="down"><b>▼</b>למטה</button>
+    <button class="pb" data-key="pagedown"><b>⇟</b>דף למטה</button>
+    <button class="pb" data-key="space"><b>␣</b>רווח</button>
+    <button class="pb" data-key="ctrl+c"><b>📄</b>העתק</button>
+    <button class="pb" data-key="ctrl+v"><b>📋</b>הדבק</button>
+    <button class="pb" data-key="ctrl+x"><b>✂️</b>גזור</button>
+    <button class="pb" data-key="ctrl+z"><b>↩️</b>בטל פעולה</button>
+    <button class="pb" data-key="ctrl+a"><b>🔲</b>בחר הכול</button>
+    <button class="pb" data-key="ctrl+s"><b>💾</b>שמור</button>
+    <button class="pb" data-key="ctrl+f"><b>🔍</b>חיפוש</button>
+    <button class="pb" data-key="ctrl+y"><b>↪️</b>בצע שוב</button>
+    <button class="pb" data-key="home"><b>⤒</b>התחלה</button>
+    <button class="pb" data-key="end"><b>⤓</b>סוף</button>
+    <button class="pb" data-key="f5"><b>🔄</b>F5</button>
+    <button class="pb" data-key="f11"><b>⛶</b>F11</button>
+    <button class="pb" data-act="type"><b>✍️</b>הקלד טקסט</button>
+    <button class="pb" data-act="type_enter"><b>📨</b>הקלד ושלח</button>
+    <button class="pb" data-key="win"><b>⊞</b>התחל</button>
+    <button class="pb" data-key="printscreen"><b>📸</b>PrtSc</button>
+  </div>
+  <div class="grid" data-grid="web">
+    <button class="pb" data-key="ctrl+t"><b>➕</b>לשונית חדשה</button>
+    <button class="pb" data-key="ctrl+w"><b>✖</b>סגור לשונית</button>
+    <button class="pb" data-key="ctrl+shift+t"><b>♻️</b>שחזר לשונית</button>
+    <button class="pb" data-key="f5"><b>🔄</b>רענן</button>
+    <button class="pb" data-key="ctrl+shift+tab"><b>⬅️</b>לשונית קודמת</button>
+    <button class="pb" data-key="ctrl+tab"><b>➡️</b>לשונית הבאה</button>
+    <button class="pb" data-key="alt+left"><b>↩️</b>חזור</button>
+    <button class="pb" data-key="alt+right"><b>↪️</b>קדימה</button>
+    <button class="pb" data-key="ctrl+l"><b>🔗</b>שורת כתובת</button>
+    <button class="pb" data-key="ctrl+="><b>🔎</b>הגדל</button>
+    <button class="pb" data-key="ctrl+-"><b>🔍</b>הקטן</button>
+    <button class="pb" data-key="ctrl+0"><b>⭕</b>גודל רגיל</button>
+    <button class="pb" data-key="pageup"><b>⇞</b>גלול למעלה</button>
+    <button class="pb" data-key="pagedown"><b>⇟</b>גלול למטה</button>
+    <button class="pb" data-key="f11"><b>⛶</b>מסך מלא</button>
+    <button class="pb" data-key="ctrl+shift+n"><b>🕶</b>גלישה בסתר</button>
+  </div>
+  <div class="grid" data-grid="pc">
+    <button class="pb" data-cmd="desktop"><b>🏠</b>שולחן עבודה</button>
+    <button class="pb" data-cmd="switch"><b>🔀</b>החלף חלון</button>
+    <button class="pb" data-cmd="minimize"><b>🔽</b>מזער</button>
+    <button class="pb" data-cmd="maximize"><b>🔼</b>הגדל</button>
+    <button class="pb" data-cmd="snap_left"><b>⬅️</b>הצמד שמאלה</button>
+    <button class="pb" data-cmd="snap_right"><b>➡️</b>הצמד ימינה</button>
+    <button class="pb warn" data-cmd="close_window"><b>❎</b>סגור חלון</button>
+    <button class="pb warn" data-cmd="close_all"><b>🧹</b>סגור הכול</button>
+    <button class="pb" data-cmd="status"><b>📊</b>מצב המחשב</button>
+    <button class="pb" data-cmd="screenshot"><b>📸</b>שמור צילום</button>
+    <button class="pb" data-cmd="open:מנהל המשימות"><b>🧰</b>מנהל משימות</button>
+    <button class="pb" data-cmd="monitor_off"><b>🌙</b>כבה מסך</button>
+    <button class="pb" data-cmd="lock"><b>🔒</b>נעל</button>
+    <button class="pb warn" data-cmd="sleep"><b>😴</b>שינה</button>
+    <button class="pb warn" data-cmd="restart"><b>🔁</b>הפעל מחדש</button>
+    <button class="pb warn" data-cmd="shutdown"><b>⏻</b>כבה</button>
+    <button class="pb" data-cmd="cancel_shutdown"><b>✋</b>בטל כיבוי</button>
+  </div>
+  <div class="grid" data-grid="open">
+    <button class="pb" data-cmd="open:כרום"><b>🌐</b>כרום</button>
+    <button class="pb" data-cmd="open:יוטיוב"><b>▶️</b>יוטיוב</button>
+    <button class="pb" data-cmd="open:ג'ימייל"><b>✉️</b>ג׳ימייל</button>
+    <button class="pb" data-cmd="open:וואטסאפ"><b>💬</b>וואטסאפ</button>
+    <button class="pb" data-cmd="open:ספוטיפיי"><b>🎧</b>ספוטיפיי</button>
+    <button class="pb" data-cmd="open:סייר קבצים"><b>📁</b>קבצים</button>
+    <button class="pb" data-cmd="open:מחשבון"><b>🧮</b>מחשבון</button>
+    <button class="pb" data-cmd="open:פנקס רשימות"><b>📝</b>פנקס</button>
+    <button class="pb" data-cmd="open:הגדרות"><b>⚙️</b>הגדרות</button>
+    <button class="pb" data-cmd="open:גוגל"><b>🔎</b>גוגל</button>
+    <button class="pb" data-cmd="open:מפות"><b>🗺</b>מפות</button>
+    <button class="pb" data-cmd="open:תרגום"><b>🈯</b>תרגום</button>
+    <button class="pb" data-cmd="open:דרייב"><b>☁️</b>דרייב</button>
+    <button class="pb" data-cmd="open:צ'אט"><b>🤖</b>Claude</button>
+    <button class="pb" data-cmd="open:וורד"><b>📘</b>וורד</button>
+    <button class="pb" data-cmd="open:אקסל"><b>📗</b>אקסל</button>
+  </div>
+  <div class="grid" data-grid="gili">
+    <button class="pb warn" data-cmd="stop"><b>⏹</b>עצרי</button>
+    <button class="pb" data-ask="בוקר טוב"><b>☀️</b>תדריך</button>
+    <button class="pb" data-ask="מה יש לי ביומן היום ומחר?"><b>📅</b>יומן</button>
+    <button class="pb" data-ask="יש לי מיילים חדשים חשובים?"><b>✉️</b>מיילים</button>
+    <button class="pb" data-ask="אילו תזכורות יש לי?"><b>⏰</b>תזכורות</button>
+    <button class="pb" data-ask="מה מזג האוויר היום?"><b>🌤</b>מזג אוויר</button>
+    <button class="pb" data-ask="מה המצב של יומן הגנן? כמה הורדות ורכישות היו השבוע?"><b>🌱</b>יומן הגנן</button>
+    <button class="pb" data-ask="תסתכלי על המסך ותגידי לי בקצרה מה רואים בו"><b>👁</b>הסבירי מסך</button>
+    <button class="pb" data-ask="תקשיבי לפגישה"><b>🎙</b>הקשיבי לפגישה</button>
+    <button class="pb" data-ask="מה סיכמנו?"><b>📝</b>סכמי פגישה</button>
+    <button class="pb" data-ask="מה את זוכרת עליי?"><b>🧠</b>זיכרון</button>
+    <button class="pb" data-ask="תתעדכני"><b>⬇️</b>עדכני את גילי</button>
+  </div>
+  <div id="volrow" data-grid="media"><span>🔈</span><input type="range" id="vol" min="0" max="100" step="5" value="50"><span>🔊</span><b id="volN">50</b></div>
+  <div id="flash"></div>
   <div id="routines"></div>
   <input type="file" id="fileIn" style="display:none">
 </div>
@@ -256,7 +387,7 @@ async function open_(s){
 
 // ---------- UI
 function add(cls, text){ const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text; $('#log').appendChild(d); $('#log').scrollTop = 1e9; return d; }
-function setState(s){ document.body.className = s; $('#state').textContent = {idle: 'בהמתנה', listening: 'מקשיבה', thinking: 'חושבת', speaking: 'מדברת'}[s] || ''; }
+function setState(s){ document.body.className = s + ($('#panel').classList.contains('open') ? ' panel-open' : ''); $('#state').textContent = {idle: 'בהמתנה', listening: 'מקשיבה', thinking: 'חושבת', speaking: 'מדברת'}[s] || ''; }
 let pcVersion = '';
 function setStatus(ok, ver){ if (ver) pcVersion = ver; const st = $('#status'); st.classList.toggle('on', ok); st.classList.toggle('off', !ok); $('#statusTxt').textContent = ok ? 'מחובר למחשב' + (pcVersion ? ' · ' + pcVersion : '') : 'המחשב לא מחובר'; }
 let voiceOn = store.get('jarvis_voice', '1') === '1';
@@ -374,9 +505,10 @@ function listen(){
     if (m.type === 'intro_info'){ syncIntro(m); return; }
     if (m.type === 'intro_error'){ const t = '🎵 המחשב לא הצליח לשלוח את השיר: ' + m.text; if (introMsg) introMsg.textContent = t; else add('sys', t); introMsg = null; return; }
     if (m.type === 'novoice'){ noVoice(m.id); return; }
+    if (m.type === 'file' && m.kind === 'clip'){ setStatus(true); gotClip(m); return; }
     if (m.type === 'file'){ setStatus(true); gotFile(m); return; }
     if (m.type === 'clip'){ setStatus(true); showClip(m.text || ''); return; }
-    if (m.type === 'file' && m.kind === 'clip'){ gotClip(m); return; }
+    if (m.type === 'answer' && quick[m.id]){ setStatus(true); clearTimeout(quick[m.id]); delete quick[m.id]; flash(m.text === 'פקודה לא מוכרת.' ? 'צריך לעדכן את גילי במחשב (לחץ "עדכון" שם)' : m.text, m.text === 'פקודה לא מוכרת.'); return; }
     if (m.type === 'routines'){ setStatus(true); showRoutines(m.names || []); return; }
     if (m.type === 'answer' && m.quiet){ setStatus(true); const el = pending[m.id]; delete pending[m.id]; if (el) { el.className = 'msg sys'; el.textContent = m.text; } else add('sys', m.text); return; }
     if (m.type === 'answer'){
@@ -420,7 +552,7 @@ async function uploadBlob(bytes){
 }
 
 // ---------- PC control panel, screen, files, routines
-$('#ctlBtn').onclick = () => { const o = $('#panel').classList.toggle('open'); if (o && KEY) send({type: 'routines', ts: Date.now() / 1000}).catch(() => {}); };
+$('#ctlBtn').onclick = () => { const o = $('#panel').classList.toggle('open'); document.body.classList.toggle('panel-open', o); $('#log').scrollTop = 1e9; if (o && KEY) send({type: 'routines', ts: Date.now() / 1000}).catch(() => {}); };
 const rid = () => Math.random().toString(36).slice(2);
 async function sendCmd(obj, label){
   const id = rid(); const el = add('sys', label || '…'); pending[id] = el;
@@ -430,13 +562,44 @@ async function sendCmd(obj, label){
   return id;
 }
 let screenWait = null;
+// buttons answer in a small line inside the panel, so pressing a key ten times doesn't fill the chat
+const quick = {};
+let flashT = null;
+function flash(text, bad){ const f = $('#flash'); f.textContent = text; f.className = 'show' + (bad ? ' bad' : ''); clearTimeout(flashT); flashT = setTimeout(() => f.className = '', 2600); }
+async function quickCmd(obj, btn){
+  if (!KEY) return;
+  if (btn) { btn.classList.add('hit'); setTimeout(() => btn.classList.remove('hit'), 180); }
+  const id = rid();
+  quick[id] = setTimeout(() => { if (quick[id]) { delete quick[id]; flash('המחשב לא עונה — האם הוא דלוק וגילי פתוחה?', true); setStatus(false); } }, 15000);
+  try { await send(Object.assign({id, ts: Date.now() / 1000}, obj)); }
+  catch(e){ clearTimeout(quick[id]); delete quick[id]; flash('אין חיבור לאינטרנט', true); }
+}
+const CONFIRM = {
+  shutdown: 'לכבות את המחשב? (הוא ייכבה בעוד דקה, ואפשר לבטל)',
+  restart: 'להפעיל את המחשב מחדש? (בעוד דקה, ואפשר לבטל)',
+  sleep: 'להכניס את המחשב למצב שינה? אחרי זה לא תוכל להעיר אותו מהטלפון.',
+  close_window: 'לסגור את החלון שפתוח עכשיו במחשב?',
+  close_all: 'לסגור את כל התוכנות הפתוחות במחשב?'};
 document.querySelectorAll('#panel [data-cmd]').forEach(b => b.onclick = () => {
   const c = b.dataset.cmd;
-  if (c === 'shutdown' && !confirm('לכבות את המחשב? (הוא ייכבה בעוד דקה, ואפשר לבטל)')) return;
-  if (c === 'sleep' && !confirm('להכניס את המחשב למצב שינה? אחרי זה לא תוכל להעיר אותו מהטלפון.')) return;
-  sendCmd({type: 'cmd', cmd: c}, '…');
+  if (CONFIRM[c] && !confirm(CONFIRM[c])) return;
+  quickCmd({type: 'cmd', cmd: c}, b);
 });
-document.querySelectorAll('#panel [data-ask]').forEach(b => b.onclick = () => { $('#panel').classList.remove('open'); busy = true; ask(b.dataset.ask); });
+document.querySelectorAll('#panel [data-key]').forEach(b => b.onclick = () => quickCmd({type: 'cmd', cmd: 'key:' + b.dataset.key}, b));
+function closePanel(){ $('#panel').classList.remove('open'); document.body.classList.remove('panel-open'); }
+document.querySelectorAll('#panel [data-ask]').forEach(b => b.onclick = () => { closePanel(); busy = true; ask(b.dataset.ask); });
+function showTab(t){
+  document.querySelectorAll('#tabs .tab').forEach(x => x.classList.toggle('on', x.dataset.tab === t));
+  document.querySelectorAll('#panel [data-grid]').forEach(g => g.classList.toggle('on', g.dataset.grid === t));
+  store.set('jarvis_tab', t); $('#panel').scrollTop = 0;
+}
+document.querySelectorAll('#tabs .tab').forEach(x => x.onclick = () => showTab(x.dataset.tab));
+showTab(document.querySelector('#tabs .tab[data-tab="' + store.get('jarvis_tab', 'main') + '"]') ? store.get('jarvis_tab', 'main') : 'main');
+$('#vol').oninput = () => { $('#volN').textContent = $('#vol').value; };
+$('#vol').onchange = () => quickCmd({type: 'cmd', cmd: 'vol:' + $('#vol').value});
+const typeToPc = enter => { const t = prompt(enter ? 'מה להקליד במחשב? (בסוף יילחץ Enter)' : 'מה להקליד במחשב?') || ''; if (t.trim()) quickCmd({type: 'type', text: t, enter}); };
+$('#panel [data-act=type]').onclick = () => typeToPc(false);
+$('#panel [data-act=type_enter]').onclick = () => typeToPc(true);
 $('#panel [data-act=screen]').onclick = async () => {
   const id = await sendCmd({type: 'screen'}, '📸 מצלם את המסך…');
   screenWait = id ? pending[id] : null; if (id) delete pending[id];
@@ -507,7 +670,7 @@ $('#panel [data-act=clip_up]').onclick = async () => {
 function showRoutines(names){
   const box = $('#routines'); box.innerHTML = '';
   names.forEach(n => { const c = document.createElement('button'); c.className = 'chip'; c.textContent = '⚡ ' + n;
-    c.onclick = () => { $('#panel').classList.remove('open'); sendCmd({type: 'routine', name: n}, '⚡ ' + n + '…'); }; box.appendChild(c); });
+    c.onclick = () => { closePanel(); sendCmd({type: 'routine', name: n}, '⚡ ' + n + '…'); }; box.appendChild(c); });
 }
 
 // ---------- voice input: hands-free mode (tap the mic once, then just talk)
@@ -524,7 +687,7 @@ function startRec(){
   if (!handsFree || recOn || busy || !SR) return;
   rec = new SR(); rec.lang = 'he-IL'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
   let text = '';
-  rec.onstart = () => { recOn = true; setState('listening'); $('#state').textContent = 'מקשיב — פשוט דבר'; };
+  rec.onstart = () => { recOn = true; setState('listening'); $('#state').textContent = 'מקשיבה — פשוט דבר'; };
   rec.onresult = e => { text = ''; for (const r of e.results) text += r[0].transcript; $('#inp').value = text; };
   rec.onerror = e => {
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
@@ -554,7 +717,7 @@ $('#mic').onclick = () => {
 // iPhone needs one tap after opening the app before it may use the microphone
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { try { rec && rec.abort(); } catch(e){} recOn = false; }
-  else if (handsFree) { keepAwake(true); scheduleRestart(500); }
+  else { if (KEY) ping(); if (handsFree) { keepAwake(true); scheduleRestart(500); } }   // back in the app: is the PC still there?
 });
 if (SR && store.get('jarvis_handsfree', '0') === '1') {
   const tapOnce = document.createElement('div');
@@ -616,7 +779,7 @@ $('#form').onsubmit = e => { e.preventDefault(); const t = $('#inp').value; $('#
   (function f(now){
     const dt = Math.min(.05, (now - last) / 1000); last = now;
     const w = Math.round(cv.clientWidth * devicePixelRatio); if (cv.width !== w) { cv.width = w; cv.height = w; gl.viewport(0, 0, w, w); }
-    const st = document.body.className || 'idle'; const [c, hc] = C[st] || C.idle;
+    const st = (document.body.className || 'idle').split(' ')[0]; const [c, hc] = C[st] || C.idle;
     for (let i = 0; i < 3; i++) { col[i] += (c[i] - col[i]) * dt * 2.5; hot[i] += (hc[i] - hot[i]) * dt * 2.5; }
     const drive = st === 'speaking' ? .45 + .3 * Math.sin(now / 90) * Math.sin(now / 37) : st === 'thinking' ? .35 : st === 'listening' ? .3 + .2 * Math.sin(now / 120) : 0;
     lv += (drive - lv) * Math.min(1, dt * 8); ph += dt * (0.5 + lv * .7) * (st === 'thinking' ? 3.2 : 1); open += (1 - open) * dt * 1.4;
@@ -656,7 +819,7 @@ async function syncIntro(m){                       // reply to intro_info from t
   if (!mine || mine.hash !== m.hash) {
     introMsg = add('sys', '🎵 מוריד את שיר הפתיחה מהמחשב…');
     send({type: 'intro_get', ts: Date.now() / 1000}).catch(() => {});
-    setTimeout(() => { if (introMsg) { introMsg.textContent = '🎵 השיר לא הגיע מהמחשב. ודא שגילי במחשב מעודכן ושהשיר קטן מ־14MB, ופתח שוב את האפליקציה.'; introMsg = null; introSynced = false; } }, 90000);
+    setTimeout(() => { if (introMsg) { introMsg.textContent = '🎵 השיר לא הגיע מהמחשב. ודא שגילי במחשב מעודכנת ושהשיר קטן מ־14MB, ופתח שוב את האפליקציה.'; introMsg = null; introSynced = false; } }, 90000);
   }
 }
 async function gotIntro(m){
