@@ -32,7 +32,7 @@ from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "9.0"
+VERSION = "9.1"
 UPDATE_REPO = "MrSigal/jarvis"          # updates are downloaded from this GitHub repo
 UPDATE_BRANCH = "main"
 FROZEN = getattr(sys, "frozen", False)          # running as the installed JARVIS.exe
@@ -212,6 +212,10 @@ def load_config():
     cfg["_pause_v70"] = True
     if cfg.get("groq_models") == ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"]:
         cfg["groq_models"] = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"]
+    if not cfg.get("_brain_v91"):                           # v9.1: the user asked for Claude as the brain
+        cfg["_brain_v91"] = True
+        if cfg.get("anthropic_api_key"):
+            cfg["brain_engine"] = "claude"
     if not cfg.get("_voice_v71"):                           # v7.1: one steady, natural Hebrew voice
         cfg["_voice_v71"] = True
         cfg["el_mood"] = "neutral"                          # mood tags made v3 change the voice from answer to answer
@@ -4605,6 +4609,20 @@ class Assistant:
             save_config()
             return f"ביטלתי את נעילת הקול. עכשיו אני מקשיבה לכולם, {u}."
 
+        m = re.search(r"(תעברי|תעבור|עברי|עבור|תשתמשי|תשתמש|תחליפי|תחליף)\s+(ל|ב)?(מוח\s+)?(של\s+|ה)?(קלוד|claude|גרוק|groq|חינמי)", s, re.I)
+        if m:
+            want = "groq" if m.group(5).lower() in ("גרוק", "groq", "חינמי") else "claude"
+            if want == "claude" and not CFG.get("anthropic_api_key"):
+                return f"אין לי עדיין מפתח של Claude, {u}. תוסיף אותו בהגדרות, בלשונית מוח, ואעבור מיד."
+            if want == "groq" and not CFG.get("groq_api_key"):
+                return f"אין לי מפתח של Groq, {u}. תוסיף אותו בהגדרות, בלשונית מוח."
+            CFG["brain_engine"] = want
+            save_config()
+            self.build_brain()
+            return f"עברתי למוח של {'Claude' if want == 'claude' else 'Groq'}, {u}."
+        if re.search(r"(באיזה|איזה) מוח", s):
+            name = "Claude" if isinstance(self.brain, Brain) else "Groq" if isinstance(self.brain, GroqBrain) else "המצב הבסיסי"
+            return f"אני עובדת עכשיו עם המוח של {name}, {u}."
         if re.fullmatch(r"(מצב הכתבה|הכתבה|(תתחילי|תתחיל|תפעילי|תפעיל) (מצב )?הכתבה|(תכתבי|תכתוב|תקלידי|תקליד) (את )?מה שאני אומר)", s):
             return self.dictate()
         if re.fullmatch(r"(תעתיקי?|העתיקי|העתק|תשלחי?|שלחי) (את זה |את הטקסט )?(לטלפון|לאייפון)", s):
